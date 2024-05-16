@@ -1,0 +1,2719 @@
+      /TITLE  Route Accounting: Create INFINIUM obligations
+      ********************************************************************
+      * RAR0250: This program creates the INFINIUM AR Obligation data
+      *          records. This data is created in the INFINIUM files named
+      *          ARPOB and ARPOW, the SPPOPNRE replacement files.
+      *
+      * CLONED FROM ARROBUCVT, but
+      *
+      * There is no *ENTRY PARM
+      * The *LDA will return XARPOSTSLS if blank for NORAND runs
+      * else the caller must have loaded it
+      * AND the Batch Number is handed out via the *LDA too.
+      *
+      *
+      * M A I N T E N A N C E   L O G
+      * -----------------------------
+      *
+      * PW   3/22/1999:  Created program
+      * JVC  3/26/99  JVC Design change since infinium screens and proof
+      *               reports do not support 17N within the user fields
+      *               even when they are non-display
+      * JVC  4/06/99  JVC Judy says to age Obligation Credit Memos like the
+      *               Invoices, but no payment terms apply
+      *
+      * PW   4/16/1999: Added LDA to pass key parms for ARLLL file to
+      *      program RAR0252 which is called in RAP0210
+      *      Pgm loads XARPOSTSLS job-card and Batch#
+      *
+      * PW   4/20/1999: Removed the creation or ARPLL, this is now done
+      *      in RAR0252
+      *
+      * JVC  4/20/1999 JVC Do not process ZERO DOLLAR Inv.s & CM.s
+      *      Load the AS OF Date from the Invoice Date in $GETDiscount subr
+      *      -per our meeting, regular sales not manually entered
+      *      should not go into any Acct Grp
+      *      (ie. Carton Returns from Distributors)
+      *
+      * JVC  4/20/1999 JVC Consider the Month-End falling on a weekend when
+      *      load the AS OF Date from the Invoice Date in $GETDiscount subr
+      *
+      * PW 04/28/1999: Added ability to detect and create Universal Charge
+      *      obligations. Added work file RAPW0250 to process, this file
+      *      passes data needed for the obligations.
+      *
+      * PW  7/ 6/1999: Added ability to detect and create Non Standard
+      *      Pricing obligations. Changed select statment for call to
+      *      $GetRAPW0250 to do this.
+      *
+      * PW  7/ 7/1999: If the invoice total is less that 0 and this is a
+      *      U.C. or N.S.P. run, change the transaction type to a 3 instead
+      *      of a 2 in the ARLOW file.
+      *      Changed $GetRAPW0250 to do this.
+      *
+      * PW  7/12/1999: Multiple changes
+      *      - Turn on OBOBJE flag if this is a N.S.P. run
+      *      - Changed calculation to include promo discounts
+      *      - Place account # in OWSLDC if this is a N.S.P. run
+      *
+      * PW  7/13/1999: Multiple changes
+      *      - Move CUUFL3 to field OWUFL1
+      *      - Move descrition to OBCRTS according to run type
+      *      - Added data area GLADTA
+      *      - Changed how Accounting year and period is gotten
+      *      - Changed mainline logic and when ARPOB is created
+      *      - $INFINsetup no longer creates the ARPOB record
+      *      - Mainline logic now breaks on change of active date
+      * JVC 7/20/1999: BUG: was putting nightly sales into 2 batches
+      *      - different settlement date makes a new batch if not XARPOSTNON
+      *      - $INFINsetup MUST create the ARPOB record and only 1 rcd
+      * JVC 7/29/1999: TYPO: SDAT was going into OWUAM1 S/B ADAT
+      *      - and different selection of mthly/wkly for due-date calcs
+JVC2  * JVC 8/05/1999: Only generate ARROX rcds when NSP Co-op and turn on
+      * scan   GL Jrnl Entries '1' and NSP Co-op needs to recalc Discount
+      *
+JVC3  * JVC3 08/09/99 added the cleanup pgm RAP0260/RAR0260
+      *      to change the Discount Amt of the Original Invoice
+      *      for Price Adjustments of Referenced CM and DB
+      *      (USROPN & close of the files in common)
+      *      Only run RAP0260 when RAPW0250 feeds this pgm an entry
+      *
+JVC3  * JVC4 08/13/99 BUG: OWUDT8 Settlement Date was getting OBDT8, etc.
+      *               Period on Batch Hdr should be consistent
+      *               so standardized on Settlement Date
+      *
+      * PW  9/20/1999:
+      *      - Saved OBOBJE flag for later use
+      *      - Changed $UpdateARPOB subr to reload the OBOBJE
+      *      - Move  $INFINSetUp subr to inside do loop, conditioned to
+      *        run 1 time only
+      *
+      * PW  9/23/1999: HD# 19990923.001
+      *      - Increased size of wFO4 to 4.0
+      *
+      * MLE 2/09/2000: Added the ARPST file and use of the description
+      *   field to determine billing type (Monthly,Weekly,Daily,Bi-monthly)
+      *   This is used to determine the As-of-date and discount date.
+      *   The majority of changes were made to the $GETDISCOUNT SUBR.
+      *
+      * LLS 3/13/2000: Added AYPDS$ to WINVTOTAL calculation.
+      *   HD 20000310.002 has details.
+      *
+      * DHS 3/31/2000: Made changes so that this program was more
+      *     similar to RAR0213 in regard to determining when to
+      *     start a new batch number.  This program was using
+      *     B6SDAT to determine when to create a new batch for NSP
+      *     only.  It will now use B6ADAT.
+      *     File ARPWOBPT was added to the program is used by program
+      *     RAR0251 to begin the proof and post.
+      *
+      * DHS 04/12/2000: Any Distributor Account invoices will be
+      *     lumped together as one obligation.  The Distributor
+      *     Account invoices are invoices that have a ship-to
+      *     number found in file ARPCDIST.
+      *     Removed one of the WRITEs to BATCH in $INFINSetup.  It was
+      *     causing the first page of the report to be blank.
+      *
+      * LLS 4/13/2000: Instead of loading sales negative invoices as Credit
+      *   Memos, load them as negative invoices. Changes were limited
+      *   to the $CreateARPOW subr.
+      *
+      * DHS 04/14/2000: In the case of a distributor load seperate
+      *   obligations will need to be created.  Add logic to $CHKDIST
+      *   so that the file RAPHDSBN is checked for a record for this
+      *   settlement.
+      *
+      * MLE 04/18/2000: Replaced call to RAR0257 with RAR0257C.
+      *
+      * MLE 05/17/2000: Fixed the way date was being editted. Was
+      *                 using 'Z' edit code and zero suppressed
+      *                 month and day fields.
+      *
+      * LLS 6/12/2000: If this is a Regular Sales Batch (not U/C or NSP)
+      *   and the Customer's Minor Class code is "CRMEM", load a negative
+      *   invoice as a credit memo. This allows accounting to fine tune
+      *   the few customers they'd like to see getting credit memos.
+      *
+      * DHS 03/20/2001: Recompiled do the Key field changes to
+      *     the ARPCDIST.  See HD 20010102.001.
+      *
+      * DHS 04/05/2001: Made changes because of the splitting of
+      *     the upload for division 52.  The "lump sum" invoice
+      *     that gets created for the credit has been modified so that
+      *     the obligation ID will no longer contain the division
+      *     number, but instead will contain the route number.
+      *     Search on DDISTOBLIG.  Increased the size from 13 to 14.
+      *
+      * MLE 05/23/01: Recompiled due to addition of fields in ARPCDIST.
+      *
+      * LLS 03/26/2002: Recompile for use of AR 12.0 Version Files
+      *
+      * DHS 05/05/2003: Changed the use of the wA13 work field to
+      *     wA14.  The changes of 04/05/2001 didn't include this
+      *     work field and it should have.
+      *
+      * DHS 05/28/2003: Corrected the creation of the distributor
+      *     credit.  The DDISTOBLIG Data Structure needs to be
+      *     recreated each time a credit is added to the sum.
+      *     Moved the logic to the $ChkDist subroutine.
+      *     Added the work file RAPW0250B to keep track of the
+      *     distributor credit Obligations. This file is used for
+      *     the print of the credits.
+      *
+      * DHS 06/09/2003: Added the update type of XARPOSTPRC.
+      *     This update type is for the Jobber Promotion Pricing
+      *     Credit.
+      *
+      * DHS 07/25/2003: Added the update type of XARPOSTFRE.
+      *     This update type is for the Jobber Free Set Credit.
+      *
+      * DHS 08/04/2003: Modified the $UpdateARPOW subroutine to
+      *     clear out the statement policy field if the
+      *     transaction type is 003 or 002.  Similiar logic is
+      *     in the $GetDiscount subroutine.
+      *
+      * DHS 01/21/2004:  Recompile due to the addition of the B6PONR field
+      *                  to the file RAPUSHDR.
+      *
+      * DHS 05/16/2005:  Recompiled due to the expansion of the
+      *     subwarehouse fields from 1,0 to 3,0.
+      *
+      * DHS 05/24/2005 - Recompiled due to the addition of the A4PIPC
+      *     field to the ARPCDIST file.
+      *
+      * SLL 01/28/2008 - Recompiled due to the addition of the A4SWHS
+      *     field to the ARPCDIST file.
+      *
+      * SLL 8/12/2008 - Modified $CHKDIST subroutine, field A1CTY# (customer
+      *     type) in file ARPCUSTI must be = 21 to be a distributor. Added code
+      *     to get distributor customer type from the DPPCODEVAL file. Removed
+      *     reference to the ARPCDIST file.
+      *
+      * LLS 08/10/2009:  Recompile for use of AR 13.0 Version Files.  Field
+      *     STPRCI was added to file ARPST
+      *
+      * LLS 01/04/2010: Recompile for use of changed GL/PL/AR 14.0 files
+      * LLS 01/07/2010: Use 13.0 version of ARTOBU01
+      *
+      * DHS 1/21/2010: Recompiled due to field additions to the
+      *     RAPHDSBN file.
+      *
+      * EAH 01/22/2010: Yesterday's recompile wasn't over ARCUST. File
+      *     ARTOBU01 is in ARCUST and the pgm needed to be recompiled
+      *     over the customized version rather than the version that
+      *     exists in AR2000. Recompiled with ARCUST in my lib list.
+      *
+      * SLL 6/23/2010: Modified code in the $ChkDist subroutine to track
+      *     distributors differently and create multiple obligations if there
+      *     are multiple distributors in the batch. Modified code in the Main
+      *     procedure to print multiple distributor credits.
+      *
+      * SLL 6/24/2010: Modified code in the $UpdateARPOW to look for multiple
+      *     distributor obligation records and match up with the ship to number.
+      *     Modified code in $ChkDist to prefix the consolidated distributor
+      *     obligation ID with SBT, this will help AR indentify the central
+      *     billing credits that come from Sheetz scan based trading.
+      *
+      * EAH 8/30/2011: Moved logic for checking whether or not a batch is an
+      *     SBT batch to another pgm (RAR0250B) that is called just before this
+      *     pgm. The parm passed into this pgm will indicate if it's SBT. WO#742
+      *
+      * DHS 9/29/2011: Modified the way central billing is lumped together for
+      *     SBT customers.  This will is being done, so that the distributor
+      *     will know what credits are coming from each store.
+      *     Added file RAPW0250SB and changed the Mainline and $ChkDist
+      *     subroutine.
+      *
+      * RCL 01/24/2012: Division & Route Expansion   WO#6770
+      *                 1.  Recompiled after change to ARPWOBPT:
+      *                     redefined WDIV# from 2,0 to 3,0.
+      *                 2.  When accessing a file using CHAIN, etc. use
+      *                     file's field name for division/cost center
+      *                     rather than work field or field from another
+      *                     file.
+      *                 3.  Replace SPPRTCTL with SPLRTDIV.
+      *
+      * RCL 03/29/2012: Division & Route Expansion   WO#6770
+      *                 1.  My 1/24/2012 change to use SPLRTDIV did not
+      *                     allow recovery of original division number.
+      *                     Removed SPLRTDIV file and replaced with ARPCUST.
+      *                     Chain to ARPCUST using B6CNB7 from RAPUSHDR to
+      *                     get CUDIV.
+
+      * RCL 09/28/2012: Division & Route Expansion   WO#6770
+      *                 1.  RAPHDSBN    field  now 3,0:  GIDIV#.
+      *                 2.  Recompiled without change.
+
+      * RCL 10/11/2012: Division & Route Expansion   WO#6770
+      *                 1.  RAPUSHDR    field  now 3,0:  B6DIV#.
+      *                 2.  Recompiled without change.
+
+      * RCL 05/08/2013: Division & Route Expansion   WO#6770
+      *                 1.  ARPCUST     field  now 3,0:  CUDIV.
+      *                 2.  Recompiled without change.
+
+      *  RCL 05/29/2013: Division & Route Expansion   WO#6770
+      *                 1.  xxSLID (5,-) will no longer be a left adjusted route
+      *                     number field followed by two blanks.  The first thre
+      *                     characters will be the division number and the last
+      *                     will be the second and third digits of the route num
+
+      *                     Route 413 in division 60 will no longer be "413  ".
+      *                     will be "06013".  The rule is that no division may h
+      *                     multiple routes with the same last two digits.
+
+      *  RCL 06/18/2013: Division & Route Expansion   WO#6770
+      *                 1.  Add validation of xxSLID number to the ARLSL file.
+      *                     old value if 5 digit value not in file.
+      *
+      * DHS 07/18/2013: Recompiled due to the addition of several
+      *     fields to the PSPMCST file.
+
+      * RCL 07/26/2013: Division & Route Expansion   WO#6770
+      *                 1.  RAPW0250SB  field  now 3,0: F7DIV#.
+      *                 2.  Recompiled without change.
+
+      * DHS 12/24/2014: Modified the Invoice Total calculation to
+      *     include the B6CNTV field.  This is now the special
+      *     rebate amount store for Wawa.
+      *     The invoice total is the wInvTotal workfield.
+      *
+      * DHS 01/15/2015: Recompiled due to the addition of the F7SBTS
+      *     field to the RAPW0250SB file.
+      *
+      * DHS 01/16/2015: Modified the program to use the RALW0250S3
+      *     logical file rather than the RALW0250S2 logical file
+      *     when lumping the distributor SBT credits together.
+      *
+      * DJS2 3/11/2015: Recompile for use of GL/PL/AR 14.1 files
+      *
+14272  // DJS2 03/25/2021 WO 14272 - Brown EDI 882
+14272  //      Convert to SQLRPGLE.
+14272  //      Add procedure UpdCrdXrefOblig Update Distributor Credit Log Xref
+14272  //      Add procedure UpdCrdXrefTot - Update Distributor Credit Log Xref
+       //
+       // DHS 08/12/2021:  Added the D_OBDATE field to the EDP882CR table.
+       //     Changes were made to the UpdCrdXrefOblig procedure and to
+       //     the $CreateARPOW subroutine.
+       //
+       // DJS2 04/06/2022 In UpdCrdXrefOblig remove inv#/date from where clause
+       //      multiple invoices in an obligation.  It is summary information.
+
+       // RSL  10/26/2022 Logic added to email report if Division 52. New Elemen
+       //      to LDA (Div# and glsource). The Email address is stored in DPPCOD
+       //
+       // RMO  04/15/2024 Added a subprocedure MakeEntryToARPSTMT() and it'll
+       //      run if the order is an EU Curl Customer(ie. ARPCUST.CZONE = 90000
+       //      This is going to add an unfinished record, and later fill it in
+       //      by RAR0016.
+       //
+14272  // H OPTION(*NODEBUGIO : *SRCSTMT)
+14272  ctl-opt OPTION(*NODEBUGIO: *SRCSTMT) ACTGRP(*CALLER);
+
+      * Herr's files
+     FRAPUSHDR  IF   E             DISK
+     FRAPW0250  IF   E           K DISK
+     FRAPW0250B UF A E           K DISK
+     FARPCUST   IF   E           K DISK    PREFIX(XZ)
+     F*ARPCDIST  IF   E           K DISK
+     FARPCUSTI  IF   E           K DISK
+     FDPPCODEVALIF   E           K DISK
+     FRAPHDSBN  IF   E           K DISK
+     FPSPMCST   IF   E           K DISK
+     FARPWOBPT  O    E             DISK
+     FRAPW0250SBIF   E           K DISK
+     FRALW0250S3UF   E           K DISK    RENAME(RW0250F7:RW0250L)
+
+      * INFINIUM files
+     FARLNA     IF   E           K DISK
+     FARLCO     IF   E           K DISK
+     FARLCU     IF   E           K DISK
+     FARLOH     IF   E           K DISK    USROPN
+     FARLPT     IF   E           K DISK
+     FARLSL     IF   E           K DISK
+     FARLST     IF   E           K DISK
+     FARPSY     IF   E             DISK    USROPN
+     FARLOB     UF A E           K DISK
+     FARLOW     UF A E           K DISK    USROPN
+     FARLOW2    UF A E           K DISK    RENAME(ARROW:ARROW2)
+     FARPSN     UF   E             DISK
+     FARPOX     O    E             DISK
+     FARLOX1    UF A E           K DISK    RENAME(ARROX:ARROX1)
+     FARTOBU01  O    E             PRINTER USROPN INFDS(PRT1)
+
+       Dcl-C SQLSuccess      '00000';
+       Dcl-C SQLNodata       '02000';
+       Dcl-C SQLNoMoreData   '02000';
+       Dcl-C SqlDupRecd      '23505';
+       Dcl-C SqlRowLocked    '57033';
+
+      * Standalone Fields
+     D wInv#C          S              9
+     D wIgnore         S              1
+     D wSBTCredit      S              1
+     D wOWOBDHHold     S                   LIKE(OWOBDH)
+     D wOWOBDHWork     S                   LIKE(OWOBDH)
+     D wOWOBDEHold     S                   LIKE(OWOBDE)
+     D wOWOBD8Hold     S                   LIKE(OWOBD8)
+     D wOBOBJEHold     S                   LIKE(OBOBJE)
+      * and end of month of the obligation if a monthly for AS OF Date
+     D wOWOBDH_PCDAY   S                   LIKE(#PCDAY)
+     D wOWOBDH_PMEND   S                   LIKE(#PMEND)
+     D wOWOBDH_PDAY    S                   LIKE(#PDAY)
+     D work_PCDAY      S                   LIKE(#PCDAY)
+     D work_PMEND      S                   LIKE(#PMEND)
+     D work_PDAY       S                   LIKE(#PDAY)
+     D wOWOBDH_15th    S                   LIKE(OWOBDH)
+      *
+      * the work fields for AS-OF date
+     D wOWOAOHHold     S                   LIKE(OWOAOH)
+     D wOWOAOEHold     S                   LIKE(OWOAOE)
+     D wOWOAO8Hold     S                   LIKE(OWOAO8)
+     D wOWOAOH_PDAY    S                   LIKE(#PDAY)
+      *
+      * date calc fields
+     D   wTILLEND      S              2  0
+     D   wTHROWAWAY    S              1  0
+     D   wREMAINDER    S              1  0
+
+JVC4 D                 DS
+   4 D wSettlmntSv             1      8  0 INZ(*zeros)
+   4 D wSettlmntSvY            1      4  0
+   4 D wSettlmntSvZ            9     12  0 INZ(*zeros)
+   4 D wSettlmntSvMZ           5     12  0
+
+JVC4 D                 DS
+   4 D DDISTOBLIG              1     14  0 INZ(*zeros)
+   4 D DRTEN                   1      3  0
+   4 D DSDAT                   4      9  0
+   4 D DBATN                  10     14  0 INZ(*zeros)
+
+JVC4 D                 DS
+   4 D B6RTEN                  1      6  0
+   4 D  dLastTwo               5      6
+   4
+   4 D wOWUDTH                             LIKE(OWUDTH)
+   4 D wOWUDT8                             LIKE(OWUDT8)
+   4 D wOWUDTE                             LIKE(OWUDTE)
+
+14272  Dcl-ds EDP882CRds                   extname('EDP882CR') inz;
+14272  End-ds;
+
+     D wDate           S               D
+     D wDistOref       S                   LIKE(OWOREF)
+     D wDistOblig      S                   LIKE(OWOBNO)
+     D wDistObDate     S               D
+     D wDistObDate80   S              8  0
+     D wInvDateHold    S                   LIKE(B6ADAT)
+     D wDateHold       S                   LIKE(B6ADAT)
+JVC4 D wADate          S                   LIKE(B6ADAT)
+JVC4 D wB6ADAT         S                   LIKE(B6ADAT)
+     D wWAPD           S                   LIKE(OWAPD )
+     D wWAYR           S                   LIKE(OWAYR )
+JVC4 D wPerHold        S                   LIKE(PIPER)
+JVC4 D wYearHold       S                   LIKE(PIYYYY)
+     D wInvTotal       S             15  2 INZ(*zeros)
+     D wA2             S              2    INZ(*blanks)
+     D wA5             S              5    INZ(*blanks)
+     D wA7             S              7    INZ(*blanks)
+     D wA9             S              9    INZ(*blanks)
+     D wA14            S             14    INZ(*blanks)
+     D wFO4            S              4  0 INZ(*zeros)
+     D wCO#            S              5    INZ('  001')
+     D wCO#Hold        S              5    INZ(*blanks)
+JVC4 D wShip5          S              5  0 INZ(*zeros)
+     D wCUNO           S                   LIKE(OWCUNO)
+     D wN4             S              4  0 INZ(*ZEROS)
+     D wFirstTime      S              3    INZ('YES')
+     D wTime           S              6  0
+     D wPyyyy          S              4  0
+     D wPperd          S              2  0
+     D wYmax           S              4  0
+     D wPmax           S              2  0
+     D wDoSetUp        S              3    INZ('YES')
+     D wFind           S              2  0
+     D wSTPC_Type      S              1
+     D wSTPC_LagA      S              2
+     D wSTPC_Lag#      S              2  0
+     D wSTPC_one       S              1
+     D wDistAcct#      S              1    INZ(*OFF)
+     D wFirstDist      S              1    INZ(*ON)
+       Dcl-s prev_OBLIG                like(D_OBLIG);
+       Dcl-s prev_OBREF                like(D_OBREF);
+
+      * Numeric data manipulation data structure
+      * the new design
+      *   Print Date 00012345678.00 becomes AAA12345678.BB
+      *   AAA = SN1 = maxes at 007 (MARCH 99)
+      *    BB = SN2 = maxes at 02  (MARCH 99)
+     D                 DS
+     D wNData                  1     13  2
+     D   wN0103                1      3  0
+     D   wN0411                4     11  0
+     D   wN1213               12     13  0
+
+      * Print file data structure
+     D PRT1            DS
+     D  STDFIL           *FILE
+     D  STDFMT           *RECORD
+     D  STSTS            *STATUS
+     D  STLBF1                93    102
+     D  STLP                 152    153B 0
+     D  STCOLS               154    155B 0
+     D  STOA                 188    189B 0
+     D  STLINE               367    368B 0
+     D  STPAGE               369    372B 0
+
+     D                SDS
+     D  STPRG            *PROC
+     D  STSTUS           *STATUS
+     D  STEXTP                40     42
+     D  STEX#                 43     46
+     D  STJOB                244    253
+     D  STUSR                254    263
+     D  STJOB#               264    269  0
+
+      *Parm for call to date processor
+     D DTPARM        E DS                  EXTNAME(AMSCDT)
+      * array for the weekday
+      * (using array since DPPMDATE is not ready yet
+      * and using AMGCDATE is more consistent & has already been called
+      * Table for Weekday names from Date API
+     D ZDA             S              4    DIM(7) CTDATA
+     D ZD#             S              1  0 DIM(%ELEM(ZDA )) ALT(ZDA )
+     D       wX        S              1  0
+      *      wX=array lookup counter
+
+      * Parm definitions for program call to RAR0257
+     D PREF#Out        S             11  0
+     D PINV#Out        S                   LIKE(B6INV#)
+     D PCUST#Out       S                   LIKE(B6CNB7)
+     D PADATOut        S                   LIKE(B6ADAT)
+     D PREF#In         S             11  0
+     D POrgREF#In      S             11  0
+     D POrnoIn         S             16
+     D PRegister       S              5  0
+     D PStatus         S              2
+      * Parm definitions for program call to DPRGLPPERD
+     D PODATE          S              8  0
+     D PIYYYY          S              4  0
+     D PIPER           S              2  0
+
+      * Data structure to break apart the return flags
+     D                 DS
+     D PFlagsIn                1      6
+     D  wPaid                         1    OVERLAY(PFlagsIn:1)
+     D  wPrinted                      1    OVERLAY(PFlagsIn:2)
+     D  wLostInv                      1    OVERLAY(PFlagsIn:3)
+     D  wDisputedInv                  1    OVERLAY(PFlagsIn:4)
+     D  wClosed                       1    OVERLAY(PFlagsIn:5)
+     D  wInUse                        1    OVERLAY(PFlagsIn:6)
+
+JVC3  * Parm definitions for program call to RAP0260/RAR0260
+JVC3 D POWBATN         S                   LIKE(OWBATN)
+JVC3 D PSTS            S              2
+JVC3 D P_0260          S              1
+JVC3 D* which is the flag from ARPOX that NSP adjustments occurred
+
+       Dcl-pr DPPEMAILRS     ExtPgm;
+         pAddr_                Like(pAddr);
+         pSubject_             Like(pSubject);
+         pMessage_             Like(pMessage);
+         pSplf_                CHAR(10);
+       End-pr;
+
+       DCL-S PAddr       CHAR(40);
+       DCL-S pSubject    CHAR(100);
+       DCL-S pMessage    CHAR(200);
+
+     D zCUSTTYPE       S              3  0 DIM(10)
+     D wCODE           S             10
+     D wIDX            S              3  0
+     D zDistributors   S              5P 0 DIM(100)
+     D wDistCounter    S              5U 0 Inz(0)
+     D wShip5A1        S              5A
+     D wShip5A2        S              5A
+     DiThisIsSBTBatch  S               N
+     D pIsSBT          S              1
+
+      * Local Data Area Data Structure
+     D LDA           E DS                  EXTNAME(DPALDA) DTAARA(*LDA)
+     D  Lbatch               620    626
+     D  Ljobn                630    639
+     D  Luid#                640    654  0
+     D  Ldiv                 656    658
+     D  LglSource            659    668
+      ******** instead of *ENTRY PARM *************************************
+
+      * Data area with version info
+     D GLADTA        E DS                    EXTNAME(GLADTADS)
+     D                                       DTAARA(GLADTA)
+
+      * Named Constants
+     D CDescSales      C                   'Sales Entry'
+     D CCreditSales    C                   'CM Sales Entry'
+     D CDescUC         C                   'U.C. Entry'
+     D CCreditUC       C                   'CM U.C. Entry'
+     D CDebitUC        C                   'DM U.C. Entry'
+     D CDescNSP        C                   'NSP Entry'
+     D CCreditNSP      C                   'CM NSP Entry'
+     D CDebitNSP       C                   'DM NSP Entry'
+     D CGLPER          C                   'DPRGLPPERD'
+     D CDescPRC        C                   'Prcing Entry'
+     D CDescFRE        C                   'FreeSt Entry'
+
+       Exec SQL set option
+        srtseq = *LANGIDSHR,
+        datfmt = *ISO,
+        commit = *none,
+        naming = *SYS,
+        datsep = '-',
+        CloSQLCsr = *ENDMOD;
+
+      *********************************************************************
+      *?                           $MainLine
+      *******************
+
+                         Initialize();
+
+      * Process the RAPUSHDR file
+     C                   DOW       NOT *in98
+     C                   READ      RSHDRB6                                98
+
+      * EOF, leave do loop
+     C                   IF        *in98
+     C                   LEAVE
+     C                   ENDIF
+
+14272  // Save original key so 882 table can be updated.
+14272  D_B6DIV# = B6DIV#;
+14272  D_B6RTEN = B6RTEN;
+14272  D_B6SDAT = B6SDAT;
+14272  D_B6SNR1 = B6SNR1;
+14272  D_B6CNB7DS = B6CNB7;
+14272  D_B6ADATDS = B6ADAT;
+14272  D_B6INV#DS = B6INV#;
+14272  D_B6SOLDDS = B6SOLD;
+
+      * First time through, do the setup
+     C                   IF        wDoSetUp = 'YES'
+     C                   EXSR      $INFINSetUp
+     C                   EVAL      wDoSetUp = 'NO '
+     C                   ENDIF
+
+      * DO NOT process this invoice if it is ZERO DOLLARS
+     C                   EVAL      wInvTotal = B6SLSA - B6RTNA - B6BBKA
+     C                                    + B6TDIS + B6PDS$ - B6CNTV
+     C                   IF        wInvTotal = *zeros
+     C                   ITER
+     C                   ENDIF
+
+
+      * DO NOT process this invoice if it was VOIDED
+     C                   IF        B6VALD <> *zeros
+     C                   ITER
+     C                   ENDIF
+
+      * DO NOT process this invoice if it is NOT a charge sale
+     C                   IF        B6PAYT <> 2
+     C                   ITER
+     C                   ENDIF
+
+      * WHENEVER A COMPANY CHANGE OCCURS, or the active date changes
+      * A NEW BATCH SHOULD BE initiated.
+      * PRINT TOTALS FOR THE PREVIOUS BATCH.
+      *?*****  NOTE  *****
+      *?This should not occur due to a company change because we
+      *?only use company # 001
+     C                   IF        wCO# <> wCO#Hold
+     C                               or B6ADAT <> wDateHold
+
+JVC   *** moved $NewBatch further down after First Time tests *
+JVC   ******* and already did it in FirstTime $Infinium Setup *
+
+      * Bypass this if first time
+     C                   IF        wFirstTime = 'NO '
+
+JVC  C* only Non-Std Pricing has multi-batches (for multi-div)
+JVC  C                               and LJOBN = 'XARPOSTNON'
+JVC  C* but multi-cmy batches are never allowed
+JVC  C                             or wFirstTime = 'NO '
+JVC  C                               and wCO# <> wCO#Hold
+      * Determine if the period has changed
+     C                   EVAL      PODATE = B6ADAT
+     C                   EXSR      $DetPeriod
+     C                   IF        PIPER <> wPerHold or PIYYYY <> wYearHold
+
+JVC  C                   EXSR      $NewBatch
+
+      * Check for print over flow
+     C                   IF        STLINE >= wFO4 or *in51
+     C                   EXSR      $PrintOvrFlw
+     C                   ENDIF
+
+      * Move the program variables to the printer/database field
+     C                   MOVE      '1'           FSEFLG
+     C                   MOVEL     'TOTAL   '    FSEFMT
+     C                   EXSR      $FSEZDP
+     C                   WRITE     TOTAL                                51
+      * Update the report with the totals
+     C                   WRITE     BATCH                                51
+      * clear the counters now, when new batch is created
+JVC  C                   CLEAR                   CNT
+JVC  C                   CLEAR                   AMT
+     C                   ENDIF
+     C                   ENDIF
+      *- wFirstTime endif
+
+     C                   EVAL      wCO#Hold = wCO#
+     C                   EVAL      wDateHold = B6ADAT
+     C                   EVAL      wFirstTime = 'NO '
+     C
+     C                   ENDIF
+      *- date-chgd endif
+
+     C                   IF        pIsSBT = 'Y'
+     C                   EVAL      iThisIsSBTBatch = *On
+     C                   ELSE
+     C                   EVAL      iThisIsSBTBatch = *Off
+     C                   ENDIF
+
+          ///FREE
+
+          // Check ship to in PSPMCST to see if this is an SBT batch
+          //If Not iThisIsSBTBatch ;
+          //wShip5 = B6CNB7 ;
+          //Setll wShip5 Pspmcst ;
+
+          //If %Equal(Pspmcst) ;
+          // iThisIsSBTBatch = *On ;
+          //EndIf;
+
+          //EndIf;
+
+          ///END-FREE
+
+      * Determine if invoice is a distributor charge.
+     C                   EXSR      $ChkDist
+     C                   IF        wIgnore = *on
+     C                   ITER
+     C                   ENDIF
+     C                   IF        wDistAcct# = *OFF or
+     C                             (wDistAcct# = *ON and wFirstDist = *ON) or
+     C                             wSBTCredit = *on
+
+      * FIND THE NEXT OBLIGATION REFERENCE NUMBER TO BE USED
+     C                   EXSR      $GetOb#
+     C                   IF        wDistAcct# = *ON
+     C                   MOVE      OWOREF        wDistOref
+     C                   ENDIF
+
+      * WRITE THE NEW OBLIGATION RECORD TO FILE ARPOW
+     C                   EXSR      $CreateARPOW
+                         MakeEntryToARPSTMT();
+14272                    // Update Distributor Credit Log Xref Obligation keys.
+14272                    UpdCrdXrefOblig();
+
+14272                    // Update Previous Distributor Credit Log Xref Invoice
+14272                    //UpdCrdXrefTot();
+
+      * UPDATE ARPOB-OBLIGATION BATCH CONTROL FILE EACH TIME AN
+      * OBLIGATION IS CREATED.
+     C                   EXSR      $UpdateARPOB
+
+      * Create one(1) detail record for each invoice
+     C                   EXSR      $CreateARPOX
+
+     C                   ELSE
+      * This is a distributor charge.  Update the obligation.
+     C                   EXSR      $UpdateARPOW
+
+14272  // Update Distributor Credit Log Xref Obligation keys.
+14272  UpdCrdXrefOblig();
+
+     C                   EXSR      $UpdateARPOB
+     C                   EXSR      $UpdateARPOX
+     C                   ENDIF
+
+     C                   IF        wDistAcct# = *ON
+     C                   EVAL      B6ADAT = wB6ADAT
+     C                   EVAL      wFirstDist = *OFF
+     C                   ENDIF
+
+      * Check for print over flow
+     C                   IF        STLINE >= wFO4 or *in51
+     C                   EXSR      $PrintOvrFlw
+     C                   ENDIF
+
+     C                   IF        wDistAcct# = *OFF
+      * Move the program variables to the screen/printer/database field
+      * and print the detail
+     C                   MOVE      '1'           FSEFLG
+     C                   MOVEL     'INVOIC  '    FSEFMT
+     C                   EXSR      $FSEZDP
+     C                   WRITE     INVOIC                               51
+     C                   ENDIF
+
+      *?*****  NOTE  *****
+      *?If Obligation tax detail is needed, place the
+      *?subroutines here, look in RAR0250 in OBSOLETE for the cloned code
+      *?look for suroutines RTVTAX, NEWOY, ADDOX, RTVDTL,
+
+     C                   ENDDO
+
+      * Print the distributor credit amount
+     C     *LOVAL        SETLL     RAPW0250B
+     C                   READ      RAPW0250B                              99
+     C                   DOW       *IN99 = *OFF
+
+     C     KW250B        SetLL     ARLOW2
+     C     KW250B        ReadE     ARLOW2                                 99
+
+     C                   Dow       Not %Eof(Arlow2)
+     C                   EVAL      wInvTotal = OWTOTA
+      * Move the program variables to the screen/printer/database field
+      * and print the detail
+     C                   MOVE      '1'           FSEFLG
+     C                   MOVEL     'INVOIC  '    FSEFMT
+     C                   EXSR      $FSEZDP
+     C                   WRITE     INVOIC                               51
+     C     KW250B        ReadE     ARLOW2                                 99
+     C                   EndDo
+
+     C                   READ      RAPW0250B                              99
+     C                   ENDDO
+
+14272  // Update Distributor Credit Log Xref Invoice Total.
+14272  UpdCrdXrefTot();
+
+     C                   EXSR      $EndProgram
+
+      *********************************************************************
+      *?                           $INFINSetUp
+      * Infinium Setup ROUTINE
+      *******************
+====>C     $INFINSetUp   BEGSR
+
+JVC3  * USROPN of files in common with RAP0260 which is called at *INLR
+   3 C                   OPEN      ARLOH
+   3 C                   OPEN      ARLOW
+
+      * RETRIEVE SYSTEM DATE FORMAT
+     C                   OPEN      ARPSY
+     C     1             SETLL     ARRSY
+     C                   READ      ARRSY                                  99
+     C                   CLOSE     ARPSY
+
+      * RETRIEVE CURRENT DATE VALUES FROM DATE PROCESSOR PROGRAM
+JVC  C                   MOVE      'U'           #FMT
+     C                   MOVE      SYDFMT        #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+     C                   Z-ADD     #PHDTE        TODAYH
+     C                   MOVE      #PEDTE        TODAYE
+
+      * reset for any later calls
+JVC  C                   MOVE      'C'           #FMT
+
+      * FO4 - SET PRINTER OVERFLOW FOR 4 CARRIAGE RETURNS
+     C                   EVAL      wFO4 = STLP - 4
+     C                   IF        STOA > *zeros and STOA < wFO4
+     C                   EVAL      wFO4 = STOA
+     C                   END
+     C                   EVAL      wFO4 = wFO4 - 3
+
+      * Setup report fields
+     C                   EVAL      STRTIM = wTime
+
+JVC  C                   EXSR      $NewBatch
+
+     C                   CLEAR                   CNT
+     C                   CLEAR                   AMT
+
+      * Update the print with 0 totals
+     C                   WRITE     BATCH                                51
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $NewBatch
+      * Start a new batch
+      *******************
+====>C     $NewBatch     BEGSR
+     C                   EXSR      $GetCOControl
+     C                   EXSR      $GetBatch#
+     C                   EXSR      $CreateARPOB
+      * Place the Period and Year into holding fields
+     C                   EVAL      wPerHold = PIPER
+     C                   EVAL      wYearHold = PIYYYY
+     C                   EXSR      $CreateWOBPT
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $GetCOControl
+      * Get the company control data
+      *******************
+====>C     $GetCOControl BEGSR
+
+     C     wCO#          CHAIN     ARRCO                              99
+
+      * Company control record was not found
+     C                   IF        *in99
+     C                   CLEAR                   COHCC
+     C                   CLEAR                   COAYR
+     C                   CLEAR                   COSYR
+     C                   CLEAR                   COAPD
+     C                   CLEAR                   COAGC
+     C                   CLEAR                   COODTL
+     C                   END
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $GetBatch#
+      * Get the batch # to use for this run
+      *******************
+====>C     $GetBatch#    BEGSR
+
+     C     1             SETLL     ARRSN
+     C                   READ      ARRSN                                  97
+     C                   EVAL      SNOBAT = SNOBAT + 1
+
+      * Last batch # used has been found, now determine next #
+     C     SNOBAT        CHAIN     ARROB                              99
+     C                   DOW       NOT *in99
+     C                   EVAL      SNOBAT = SNOBAT + 1
+     C     SNOBAT        CHAIN     ARROB                              99
+     C                   END
+
+     C                   Z-ADD     SNOBAT        OBBATN
+
+      * Update the sequence # file with the batch # to be used by this run
+     C                   IF        NOT *in97
+     C                   UPDATE    ARRSN
+     C                   END
+
+      * Place the batch in the lda
+     C                   MOVE      OBBATN        Lbatch
+     C                   OUT       LDA
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $CreateARPOB
+      * WRITE BATCH RECORD TO FILE ARPOB
+      * REVIEW DOCUMENTATION WITHIN TECHNICAL USER'S GUIDE CONCERNING
+      * INVOICING FIELDS INFORMATION and FOR MORE INFORMATION REGARDING
+      * GENERATION OF RECORDS WITHIN ARPOB
+      *******************
+====>C     $CreateARPOB  BEGSR
+
+     C                   MOVE      wCO#          OBCO
+     C                   CLEAR                   OBCNT
+     C                   CLEAR                   OBAMT
+     C                   CLEAR                   OBBACT
+     C                   CLEAR                   OBBJOB
+     C                   MOVE      '0'           OBBSTS
+     C                   Z-ADD     TODAYH        OBCRTH
+     C                   MOVE      TODAYE        OBCRTE
+     C                   TIME                    OBCRTT
+     C                   CLEAR                   OBINPO
+     C                   CLEAR                   OBINPH
+     C                   CLEAR                   OBINPE
+     C                   CLEAR                   OBINPT
+     C                   CLEAR                   OBPRVO
+     C                   MOVE      '0'           OBPRVR
+     C                   CLEAR                   OBPRVH
+     C                   CLEAR                   OBPRVE
+     C                   CLEAR                   OBPRVT
+     C                   CLEAR                   OBPSTO
+     C                   CLEAR                   OBPSTH
+     C                   CLEAR                   OBPSTE
+     C                   CLEAR                   OBPSTT
+     C                   MOVE      COHCC         OBCURR
+
+      * Change the description
+     C                   SELECT
+     C                   WHEN      LJOBN = 'XARPOSTSLS'
+     C                   MOVEL     CDescSales    OBCRTS
+
+     C                   WHEN      LJOBN = 'XARPOSTUNV'
+     C                   MOVEL     CDescUC       OBCRTS
+
+     C                   WHEN      LJOBN = 'XARPOSTNON'
+     C                   MOVEL     CDescNSP      OBCRTS
+
+     C                   WHEN      LJOBN = 'XARPOSTPRC'
+     C                   MOVEL     CDescPRC      OBCRTS
+
+     C                   WHEN      LJOBN = 'XARPOSTFRE'
+     C                   MOVEL     CDescFRE      OBCRTS
+     C                   ENDSL
+
+      * YOU MUST ENTER THE CURRENCY OF ALL OBLIGATIONS BEING PROCESSED
+      * WITHIN A BATCH IN FIELD OBPCC
+      * Default is 'USD' for U.S. dollars
+     C     SYFCCC        IFEQ      '1'
+     C                   MOVE      'USD'         OBPCC
+     C                   ELSE
+     C                   MOVE      COHCC         OBPCC
+     C                   END
+
+     C                   Z-ADD     COAYR         OBAYR
+     C                   Z-ADD     COSYR         OBSYR
+     C                   Z-ADD     COAPD         OBAPD
+
+JVC4  * Determine the period using Settlement Date (Standard)
+JVC4 C                   EVAL      PODATE = B6ADAT
+     C                   EXSR      $DetPeriod
+
+      * MOVE THE INFINIUM ACCOUNTING PERIOD AND DATE TO THE OUTPUT
+     C                   EVAL      OBAPD = PIPER
+     C                   EVAL      OBAYR = PIYYYY
+
+     C                   MOVE      COAGC         OBAGC
+     C                   CLEAR                   OBBREF
+     C                   CLEAR                   OBDESC
+     C                   CLEAR                   OBICNT
+     C                   CLEAR                   OBIAMT
+     C                   CLEAR                   OBERR
+     C                   CLEAR                   OBERRB
+     C                   CLEAR                   OBAURG
+     C                   CLEAR                   OBBTYP
+
+JVC   * Regular Sales from Norand and Adjustments to Norand
+JVC   * do not go into any Accting Group
+JVC   * (ie. Carton Returns from Distributors)
+      * per JVC email to Kevin 4/20/99
+JVC  C                   SELECT
+     C     LJOBN         WHENEQ    'XARPOSTSLS'
+     C     LJOBN         OREQ      'XARPOSTUNV'
+     C     LJOBN         OREQ      'XARPOSTNON'
+     C     LJOBN         OREQ      'XARPOSTCVT'
+     C     LJOBN         OREQ      'XARPOSTPRC'
+     C     LJOBN         OREQ      'XARPOSTFRE'
+     C                   MOVE      *BLANKS       OBAGC
+     C                   OTHER
+     C* * * other wise regular MANUAL ENTRIES will dft to customer CUAGC
+     C                   ENDSL
+
+
+      * The following two codes are for GL journal entrys and tax detail
+      * '0' = NO
+      * AUTO SALES-FEEDS ! NEVER ! CREATE GL Journals !
+      * (This OBOBJE flag is reserved for Manually Entered Obligations)
+     C                   MOVE      '0'           OBOBJE
+     C                   MOVE      '0'           OBTXDT
+
+      * Change the GL journal flag on if this is a N.S.P. co-op run
+     C                   SELECT
+     C                   WHEN      LJOBN = 'XARPOSTNON'
+     C                               and B6DIV# = 16
+     C                   EVAL      OBOBJE = '1'
+     C                   ENDSL
+
+     C                   EVAL      wOBOBJEHold = OBOBJE
+
+      * Move the program variables to the screen/printer/database field
+     C                   WRITE     ARROB
+
+     C                   ENDSR
+      /TITLE
+      *********************************************************************
+      *?                           $CreateWOBPT
+      * WRITE BATCH NUMBER AND ID# TO WORK FILE ARPWOBPT
+      *******************
+====>C     $CreateWOBPT  BEGSR
+
+      * If this is a Norand update run then store the Division # and
+      * Settlement Date into the batch control file.
+     C                   IF        LJOBN = 'XARPOSTSLS' or LJOBN = *blanks
+     C                   EVAL      WUID# = 0
+     C                   EVAL      WBATN = OBBATN
+     C                   EVAL      WDIV# = B6DIV#
+     C                   EVAL      WSDAT = B6SDAT
+     C                   WRITE     ARRWOBPT
+     C                   ELSE
+      * If this is a NonStandard Pricing or Universal Charge run
+      * then only save the ID#.  The Division # and Settlement
+      * Date have no meaning.
+     C                   EVAL      WUID# = Luid#
+     C                   EVAL      WBATN = OBBATN
+     C                   EVAL      WDIV# = 0
+     C                   EVAL      WSDAT = 0
+     C                   WRITE     ARRWOBPT
+     C                   ENDIF
+
+     C                   ENDSR
+      /TITLE
+      *********************************************************************
+      *?                           $ChkDist
+      * Check to see if the account is actually a distributor credit.
+      *******************
+====>C     $ChkDist      BEGSR
+
+     C                   EVAL      wIgnore = *off
+     C                   EVAL      wSBTCredit = *off
+     C                   EVAL      wShip5 = B6CNB7
+
+      * A distributor credit should only be 1 lump sum if the customer
+      * type is a 21 and if a batch number has been assigned in program RAR0140.
+
+     C*    wShip5        SETLL     ARPCDIST                               99
+
+      /FREE
+
+       *IN99 = *OFF ;
+       CHAIN wSHIP5 ARPCUSTI ;
+
+       IF %FOUND(ARPCUSTI) ;
+         wIDX = %LOOKUP(A1CTY#:zCUSTTYPE) ;
+
+         IF wIDX > 0 ;
+           *IN99 = *ON ;
+         ENDIF;
+
+       ENDIF;
+
+      /END-FREE
+
+     C                   IF        *IN99 = *ON
+     C                   Z-ADD     B6DIV#        GIDIV#
+     C     KDISTBATN     CHAIN     RAPHDSBN                           99
+
+     C                   IF        *IN99 = *OFF
+     C                   EVAL      wDistAcct# = *ON
+     C                   EVAL      wB6ADAT = B6ADAT
+     C                   CLEAR                   wDistOblig
+     C                   CLEAR                   wA14
+      * Check to if the invoice is a distributor credit for an SBT sale.
+      * These get lumped together
+     C                   Z-ADD     B6DIV#        F7DIV#
+     C     KSBTDIST      CHAIN     RAPW0250SB
+     C                   IF        %FOUND(RAPW0250SB)
+      * Check if group has been taken care of already
+     C                   IF        F7PROC = *ON
+     C                   EVAL      wIgnore = *ON
+     C                   LEAVESR
+     C                   ELSE
+     C                   EVAL      wDistOblig = F7OBNO
+     C                   EVAL      wSBTCredit = *ON
+     C                   EVAL      B6ADAT = F7DDAT
+      * Flag all associated credits as processed
+     C     KW0250SB      SETLL     RALW0250S3
+     C     KW0250SB      READE     RALW0250S3
+     C                   DOW       NOT %EOF(RALW0250S3)
+     C                   EVAL      F7PROC = *ON
+     C                   UPDATE    RW0250L
+     C     KW0250SB      READE     RALW0250S3
+     C                   ENDDO
+     C                   ENDIF
+     C                   ELSE
+      * Invoice is a distributor credit that is non-sbt related
+      * and should be lumped
+     C                   EVAL      B6ADAT = B6SDAT
+     C                   EVAL      DRTEN = B6RTEN
+     C     *ISO          MOVE      B6SDAT        wDate
+     C     *MDY          MOVE      wDate         DSDAT
+     C                   EVAL      DBATN = GIBATN
+     C                   EVAL      wA14 = %trim(%editc(DDISTOBLIG:'Z'))
+     C                   MOVEL(p)  wA14          wDistOblig
+     C                   ENDIF
+      * Add to the work file
+     C                   EVAL      F5OBNO = wDistOblig
+     C                   EVAL      F5BATN = OBBATN
+     C     KW250B        SETLL     RAPW0250B                              99
+
+     C                   IF        *IN99 = *OFF
+     C                   WRITE     RW0250F5
+     C                   ENDIF
+
+      /FREE
+
+       wIdx = %LookUp(wShip5:zDistributors) ;
+
+       If wIdx > 0 ;
+         wFirstDist = *Off ;
+       Else ;
+         wDistCounter += 1 ;
+         zDistributors(wDistCounter) = wShip5 ;
+         wFirstDist = *On ;
+       EndIf;
+
+      /END-FREE
+
+     C                   ELSE
+     C                   EVAL      wDistAcct# = *OFF
+     C                   ENDIF
+
+     C                   ELSE
+     C                   EVAL      wDistAcct# = *OFF
+     C                   ENDIF
+
+     C                   ENDSR
+      /TITLE
+      *********************************************************************
+      *********************************************************************
+      *?                           $GetOb#
+      * Get the obligation # to be used
+      *******************
+====>C     $GetOb#       BEGSR
+
+     C     1             SETLL     ARRSN
+     C                   READ      ARRSN                                  97
+     C                   ADD       SYORIN        SNOREF
+
+     C     SNOREF        CHAIN     ARROH                              99
+     C                   DOW       NOT *in99
+     C                   ADD       SYORIN        SNOREF
+     C     SNOREF        CHAIN     ARROH                              99
+     C                   END
+
+     C     SNOREF        CHAIN     ARROW                              99
+     C                   DOW       NOT *in99
+     C                   ADD       SYORIN        SNOREF
+     C     SNOREF        CHAIN     ARROW                              99
+     C                   END
+
+     C                   Z-ADD     SNOREF        OWOREF
+
+     C                   IF        NOT *in97
+     C                   UPDATE    ARRSN
+     C                   END
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $CreateARPOW
+      * WRITE HEADER RECORD TO FILE ARPOW
+      * REVIEW DOCUMENTATION WITHIN TECHNICAL USER'S GUIDE CONCERNING
+      * INVOICING FIELDS INFORMATION and FOR MORE INFO. REGARDING
+      * GENERATION OF RECORDS WITHIN ARPOW
+      *********************************************************************
+      *  Please note the following for zero dollar obligations:
+      *      - Only invoice types of type 001 or credit memos of
+      *        type 002 can be used for zero dollar obligaitons.
+      *      - When the zero dollar obligaiton is posted, it is
+      *        marked closed at that time.
+      *      - Zero dollar obligat. do not support tax detail info
+      *        therefore do not send over any tax detail lines.
+      *******************
+====>C     $CreateARPOW  BEGSR
+
+     C                   CLEAR                   CUMICL
+     C                   MOVE      wCO#Hold      OWCO
+     C                   EVAL      wA7 = %editc(B6CNB7:'Z')
+     C                   MOVE(p)   wA7           OWCUNO
+
+      * FIND THE ARLCU record, the customer control info
+     C     KARLCU        CHAIN     ARRCU                              99
+
+     C                   IF        wSBTCredit = *ON
+     C                   EVAL      wInvTotal = F7TOT
+     C                   ELSE
+      * Determine the invoice total
+     C                   EVAL      wInvTotal = B6SLSA - B6RTNA - B6BBKA
+     C                                    + B6TDIS + B6PDS$ - B6CNTV
+     C                   ENDIF
+
+     C                   SELECT
+     C                   WHEN      wInvTotal > 0
+     C                   MOVE      '001'         OWTRAN
+     C                   MOVEL(p)  CDescSales    OWDESC
+      *
+     C                   WHEN      wInvTotal < 0 and LJOBN = 'XARPOSTSLS'
+     C                             or wInvTotal < 0 and LJOBN = *blanks
+     C                   IF        CUMICL = 'CRMEM'
+     C                   MOVE      '002'         OWTRAN
+     C                   ELSE
+     C                   MOVE      '001'         OWTRAN
+     C                   ENDIF
+     C                   MOVEL(p)  CCreditSales  OWDESC
+      *
+     C                   WHEN      wInvTotal < 0
+     C                   MOVE      '002'         OWTRAN
+     C                   MOVEL(p)  CCreditSales  OWDESC
+     C                   ENDSL
+
+     C                   CLEAR                   OWREFA
+     C                   CLEAR                   OWREFP
+     C                   CLEAR                   OWREFB
+
+     C                   IF        wDistAcct# = *OFF
+     C                   CLEAR                   wA9
+     C                   EVAL      wA9 = %trim(%editc(B6INV#:'Z'))
+     C                   MOVEL(p)  wA9           OWOBNO
+     C                   ELSE
+     C                   EVAL      OWOBNO = wDistOblig
+     C                   ENDIF
+
+     C                   IF        B6ADAT = *zeros
+     C                   CLEAR                   wOWOBDHHold
+     C                   CLEAR                   wOWOBDEHold
+     C                   CLEAR                   wOWOBD8Hold
+     C                   CLEAR                   wInvDateHold
+
+     C                   CLEAR                   wOWOBDH_PCDAY
+     C                   CLEAR                   wOWOBDH_PMEND
+     C                   CLEAR                   wOWOBDH_PDAY
+
+     C                   CLEAR                   wOWOAOHHold
+     C                   CLEAR                   wOWOAOEHold
+     C                   CLEAR                   wOWOAO8Hold
+     C                   ENDIF
+
+     C                   IF        B6ADAT <> wInvDateHold
+     C                   EVAL      wInvDateHold = B6ADAT
+     C                   Z-ADD     wInvDateHold  #PDIN
+     C                   MOVEL     #PDIN         wN4
+     C                   MOVE      wN4           #PDIN
+     C                   MOVE      wInvDateHold  wN4
+     C                   MOVEL     wN4           #PDIN
+     C                   MOVE      'C'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C     #PERR         IFEQ      '0'
+     C                   EVAL      wOWOBDHHold = #PHDTE
+     C                   EVAL      wOWOBDEHold = #PEDTE
+     C                   EVAL      wOWOBD8Hold = #P8DTE
+     C                   EVAL      wOWOBDH_PCDAY = #PCDAY
+     C                   EVAL      wOWOBDH_PMEND = #PMEND
+     C                   EVAL      wOWOBDH_PDAY  = #PDAY
+     C                   ELSE
+     C                   CLEAR                   wOWOBDHHold
+     C                   CLEAR                   wOWOBDEHold
+     C                   CLEAR                   wOWOBD8Hold
+
+     C                   CLEAR                   wOWOBDH_PCDAY
+     C                   CLEAR                   wOWOBDH_PMEND
+     C                   CLEAR                   wOWOBDH_PDAY
+     C                   ENDIF
+     C                   ENDIF
+
+     C                   EVAL      OWOBDH = wOWOBDHHold
+     C                   EVAL      OWOBDE = wOWOBDEHold
+     C                   EVAL      OWOBD8 = wOWOBD8Hold
+     C                   IF        wDistAcct# = *ON
+       Monitor;
+        EVAL      wDistObDate = %date(OWOBD8:*USA);
+        EVAL wDistObDate80 = %Dec(%char(wDistObDate:*ISO0):8:0);
+       On-Error;
+        Eval wDistObDate80 = 0;
+       EndMon;
+
+     C                   ELSE
+     C                   CLEAR                   wDistObDate
+     C                   ENDIF
+      * the AS OF date
+      * is done later where
+      * the discount date is done
+     C                   CLEAR                   OWOAOH
+     C                   CLEAR                   OWOAOE
+     C                   CLEAR                   OWOAO8
+
+     C                   MOVE      *ZEROS        OWAGE
+
+     C                   MOVE      OBBATN        OWBATN
+     C                   CLEAR                   OWSTCO
+
+     C                   CLEAR                   OWSADD
+     C                   CLEAR                   OWRTTB
+     C                   CLEAR                   OWFGPC
+     C                   CLEAR                   OWICDC
+     C                   CLEAR                   OWFREA
+     C                   CLEAR                   OWTAXA
+     C                   CLEAR                   OWMS1A
+     C                   CLEAR                   OWMS2A
+     C                   CLEAR                   OWMS3A
+     C                   CLEAR                   OWDSCA
+
+      * Determine the total obligation
+     C                   EVAL      OWTOTA = wInvTotal
+
+      * Determine the AR amount
+     C                   EVAL      OWARA = wInvTotal
+
+      * Determine the net sales
+     C                   EVAL      OWNETA = wInvTotal
+
+      * Determine the sales amount
+     C                   EVAL      OWSLSA = wInvTotal
+
+      * Clear the due date, discount date, net due date, and discount amount
+     C                   CLEAR                   OWDUEH
+     C                   CLEAR                   OWDUEE
+     C                   CLEAR                   OWDUE8
+     C                   CLEAR                   OWDSCH
+     C                   CLEAR                   OWDSCE
+     C                   CLEAR                   OWDSC8
+     C                   CLEAR                   OWDSCA
+     C                   CLEAR                   OWPTPC
+     C                   CLEAR                   NAPTPC
+
+      * If this is a sale, determine the discount
+     C                   EXSR      $GetDiscount
+
+     C                   CLEAR                   OWCAPP
+     C                   MOVE      '0'           OWEXTT
+     C                   MOVE      '0'           OWEXFC
+     C                   MOVE      '0'           OWEXDL
+     C                   MOVE      '0'           OWEXST
+     C                   MOVE      '0'           OWEXDA
+
+     C                   MOVE      OBAGC         OWAGC
+
+JVC  C                   MOVEL     'AR   '       OWARDC
+JVC  C                   MOVEL     'AR   '       OWSLDC
+
+     C                   CLEAR                   OWFRDC
+     C                   CLEAR                   OWTXDC
+     C                   CLEAR                   OWM1DC
+     C                   CLEAR                   OWM2DC
+     C                   CLEAR                   OWM3DC
+     C                   CLEAR                   OWORNO
+     C                   CLEAR                   OWPONO
+
+     C                   CLEAR                   wA5
+     C                   EVAL      wA5 = %trim(%editc(B6DIV#:'Z'))
+     C                   MOVEL     wA5           OWSMAN
+
+      * If this is a NSP co-op run (division 16)
+      * Get the correct salesman code from SPPRTCTL
+     C                   IF        LJOBN = 'XARPOSTNON'
+     C                               and B6DIV# = 16
+     C                   EXSR      $GetSalesman
+     C                   ENDIF
+
+     C                   CLEAR                   wA5
+     C                   MOVEL     B6DIV#        OWSLID
+     C                   MOVE      dLastTwo      OWSLID
+
+      *                           Validate OWSLID value              WO#6770
+
+     C     OWSLID        CHAIN     ARRSL
+     C                   IF        Not %found(ARLSL)
+     C                   CLEAR                   OWSLID
+     C                   EVAL      wA5 = %trim(%editc(B6RTEN:'Z'))
+     C                   MOVEL     wA5           OWSLID
+   4 C                   ENDIF
+
+     C                   CLEAR                   OWCJPC
+     C                   MOVE      '0'           OWDITC
+     C                   MOVE      '0'           OWERRH
+     C                   MOVE      '0'           OWERRD
+     C                   MOVE      '0'           OWERRT
+
+     C                   MOVEL(p)  CUUFL3        OWUFL1
+     C                   CLEAR                   OWUFL2
+
+     C                   CLEAR                   wA5
+     C                   CLEAR                   OWUFL3
+
+      * fix typo 7/29/99 JVC
+     C                   EVAL      OWUAM1 = B6ADAT
+
+      * store the seq-nbrs from RAP* files
+      *   Print Date 00012345678.00 becomes AAA12345678.BB
+      *   AAA = SN1 = maxes at 7 (MARCH 99)
+      *    BB = SN2 = maxes at 2 (MARCH 99)
+     C                   Z-ADD     B6SNR2        wN1213
+     C                   Z-ADD     B6SNR1        wN0103
+     C                   Z-ADD     0             wN0411
+     C                   MOVE      wNData        OWUAM2
+
+JVC4  * Settlement Date gets into User Date
+   4 C     B6SDAT        IFNE      wSettlmntSv
+   4 C                   move      B6SDAT        wSettlmntSv
+   4 C                   MOVE      wSettlmntSvY  wSettlmntSvZ
+   4 C                   MOVE      wSettlmntSvMZ #PDIN
+   4 C                   MOVE      'C'           #FMT
+   4 C                   MOVE      'MDY'         #FFDHI
+   4 C                   CALL      'AMGCDATE'    ADCPRM
+   4
+   4 C     #PERR         IFEQ      '0'
+   4 C                   MOVE      #PHDTE        OWUDTH
+   4 C                   MOVE      #P8DTE        OWUDT8
+   4 C                   MOVE      #PEDTE        OWUDTE
+   4 C                   ELSE
+   4 C                   CLEAR                   OWUDTH
+   4 C                   CLEAR                   OWUDTE
+   4 C                   CLEAR                   OWUDT8
+   4 C                   ENDIF
+   4  *
+   4 C                   Z-ADD     OWUDTH        wOWUDTH
+   4 C                   Z-ADD     OWUDT8        wOWUDT8
+   4 C                   MOVE      OWUDTE        wOWUDTE
+   4 C                   ELSE
+   4 C                   Z-ADD     wOWUDTH       OWUDTH
+   4 C                   Z-ADD     wOWUDT8       OWUDT8
+   4 C                   MOVE      wOWUDTE       OWUDTE
+   4 C                   ENDIF
+      *             - - - - - - - -
+     C                   Z-ADD     OBAYR         OWAYR
+     C                   Z-ADD     OBSYR         OWSYR
+     C                   Z-ADD     OBAPD         OWAPD
+
+      *      The following fourteen fields are only used if this batch
+      *      contains foreign currency.  Foreign currency processing
+      *      is only allowed if the system control field SYFCCC = 1".
+      *      Foreign currency processing is enabled within a batch if
+      *      the base currency of the company owning the batch (OBCURR)
+      *      is not the same as the currency in the batch (OBPCC).
+      *      For non-foreign currency batches, initialize the fields
+      *      to blanks and zeros as shown.  For foreign currency
+      *      batches, these fields identify the exchange rate OWPCER,
+      *      the exchange rate per factor (ie: modifier) OWPCRP,
+      *      a rate lock flag OWPCRL, an exchange rate method OWEMOD,
+      *      and the BASE currency amounts.
+      *      If you want the Curr Management System (CM2000) to provide
+      *      the rates, set the rate and per fields to zero, and the
+      *      exchange rate method to blanks.  When an
+      *      obligation proof is run OR the obligation is updated
+      *      interactively via Maintain Obligation Batches, the rate
+      *      and per factor, and method will be retrieved based upon
+      *      the obligation date.
+      *      Setting the lock flag to "0" specifies that the rates
+      *      should be reresolved whenever the obligation is edited.
+      *      This occurs for all obligations when the batch proof is
+      *      is run.  It occurs for an individual obligation whenever
+      *      the obligation is interactively updated via the
+      *      Maintain Obligation Batches function.  If you want the
+      *      rates retrieved once and then frozen, set the lock flag
+      *      to "1".  If you want to provide the rates, enter the
+      *      appropriate rate (and per if applicable).  You must then
+      *      set the lock flag to "1"; otherwise the proof process will
+      *      reresolve the rates based upon the obligation date.
+      *      The exchange rate method OWEMOD field should only be used
+      *      if foriegn currency processing is being used.
+      *      Setting the exchange rate method to "1" means the exchange
+      *      rate is  "Direct".
+      *      Setting the exchange rate method to "2" means the exchange
+      *      rate is "Indirect"
+
+      *      If you want to send base currency amounts from another
+      *      system instead of sending a rate and requesting AR2000
+      *      to calculate the amounts, you must set the rate lock to
+      *      "2".  This option should be considered if your other
+      *      system (ie: billing or order entry) creates your GL
+      *      journal entries.  This will eliminate penny variances
+      *      which can occur if each system calculates base currency
+      *      amounts independently.  However, be advised that AR2000
+      *      does not allow changes to any financial data contained
+      *      in obligations having rate locks of "2".  Therefore you
+      *      must ensure that you correctly initialize all base
+      *      currency amount fields in the interface program.  AR2000
+      *      will not calculate base currency amounts if the rate lock
+      *      is set to "2".  If the rate lock is "2", you must specify
+      *      an exchange rate for informational purposes.  This rate
+      *      will not be validated by AR2000, except to ensure that an
+      *      entry is made.  You must also specifiy the exchange rate
+      *      method.
+      *      Setting the exchange rate method to "1" means the exchange
+      *      rate is  "Direct".
+      *      Setting the exchange rate method to "2" means the exchange
+      *      rate is "Indirect"
+
+     C                   CLEAR                   OWPCER
+     C                   CLEAR                   OWEMOD
+     C                   CLEAR                   OWPCRP
+     C                   MOVE      '0'           OWPCRL
+
+      *      For foreign currency obligations, you do not need to enter
+      *      base currency amounts unless the rate lock is "2".  If the
+      *      rate lock is "2", you do not need to enter base currency
+      *      amounts for OWTOTH, OWARH, and OWNETH, since these amounts
+      *      are calculated based upon the other base currency amounts.
+
+     C                   CLEAR                   OWTOTH
+     C                   CLEAR                   OWSLSH
+     C                   CLEAR                   OWFREH
+     C                   CLEAR                   OWTAXH
+     C                   CLEAR                   OWMS1H
+     C                   CLEAR                   OWMS2H
+     C                   CLEAR                   OWMS3H
+     C                   CLEAR                   OWARH
+     C                   CLEAR                   OWNETH
+     C                   CLEAR                   OWDSAH
+
+      *      The following two fields are only used if this obligation
+      *      is going to have tax detail.  Tax processing is only
+      *      allowed if the Tax Interface Program on the Entity Control
+      *      file is filled in with a valid program.  Tax processing
+      *      allows you to distributue the tax amount on the obligation
+      *      header (OWTAXA).  This is similiar to how the obligation
+      *      detail works.   For tax processing, the Tax Detail flag
+      *      (OWTXDT) must be equal to "1".  If you want Global Taxation
+      *      2000 (GT2000) to provide you with the tax information then
+      *      set the Tax Lock field to "0".  When an obligation proof
+      *      is run OR the obligation is updated interactively via
+      *      Maintain Obligation Batches, the tax information will be
+      *      retrieved based upon the tax date.
+      *      Setting the tax lock flag to "0" specifies that the tax amt.
+      *      should be reresolved whenever the obligation is edited.
+      *      This occurs for all obligations when the batch proof is
+      *      is run.  It occurs for an individual obligation whenever
+      *      the obligation is interactively updated via the
+      *      Maintain Obligation Batches function.
+      *      Note:  All tax information, except the Tax Detail flag
+      *             (OWTXDT) (OBTXDT) and the Tax Lock flag(OWTXLK) ARE
+      *             located on the Tax Detail File ARPOX.
+
+      *      If you want to send tax information from another system
+      *      system instead of sending a tax info & requesting AR2000
+      *      to calculate the amounts, you must set the tax lock to
+      *      "2".  This option should be considered if your other
+      *      system (ie: billing or order entry) creates your GL
+      *      journal entries.  This will eliminate penny variances
+      *      which can occur if each system calculates tax amounts
+      *      independently.  However, be advised that AR2000 does not
+      *      allow changes to any financial data contained in obligations
+      *      having tax locks of "2".  Therefore you must ensure that
+      *      correctly initialize all tax amount fields in the interface
+      *      program.  AR2000 will not calculate tax amounts if the
+      *      tax lock is set to "2".
+
+      *  THE OBLIGATIN HEADER TAX DETAIL FLAG IS MOVED INTO TAX DETAIL
+     C                   MOVE      OBTXDT        OWTXDT
+     C                   MOVE      '0'           OWTXLK
+
+      *  SEQUENTIAL NUMBER INFORMATION
+     C                   CLEAR                   OWDONS
+     C                   CLEAR                   OWDOSN
+     C                   CLEAR                   OWDOAA
+
+      *  DRAFT REFERENCE NUMBER
+     C                   CLEAR                   OWDREF
+
+      *  Blank out the Adjustment Reason Code
+     C                   CLEAR                   OWAJRC
+
+JVC  C                   SELECT
+JVC   * If this is an NOT a regular Norand sales run, get the work file
+JVC   * record
+     C                   WHEN      LJOBN = 'XARPOSTUNV'
+     C                              or LJOBN = 'XARPOSTNON'
+     C                   EXSR      $GetRAPW0250
+
+      * This is a nightly NORAND sales run
+      * Move the invoice # to the obligation order # field
+     C                   WHEN      LJOBN = 'XARPOSTSLS'
+     C                              or LJOBN = *blanks
+     C                   EVAL      wA9 = %TRIM(%EDITC(B6INV#:'Z'))
+     C                   MOVE(p)   wA9           OWORNO
+      * Move the created # to the obligation order # field
+      * for JOBBER pricing updates.
+     C                   WHEN      LJOBN = 'XARPOSTPRC'
+     C                   EVAL      OWORNO = OWOBNO
+
+      * Move the created # to the obligation order # field
+      * for JOBBER free set updates.
+     C                   WHEN      LJOBN = 'XARPOSTFRE'
+     C                   EVAL      OWORNO = OWOBNO
+     C                   ENDSL
+
+      * If this is a NSP co-op run (division 16)
+      * Over ride the accounting period and year using the active date
+      * from RAPUSHDR
+     C                   IF        LJOBN = 'XARPOSTNON'
+     C                               and B6DIV# = 16
+JVC4  * Has the Settlement (Not Active date) changed
+JVC4 C                   IF        B6ADAT <> wADate
+JVC4  * Determine the period using Settlement Date, not active date
+JVC4 C                   EVAL      PODATE = B6ADAT
+     C                   EXSR      $DetPeriod
+      * MOVE THE INFINIUM ACCOUNTING PERIOD AND DATE TO THE OUTPUT
+     C                   EVAL      wWAPD = PIPER
+     C                   EVAL      wWAYR = PIYYYY
+JVC4 C                   EVAL      wADate = B6ADAT
+     C                   ENDIF
+     C                   EVAL      OWAPD = wWAPD
+     C                   EVAL      OWAYR = wWAYR
+     C                   ENDIF
+
+      *  Move the program variables to the screen/printer/database field
+     C                   WRITE     ARROW
+
+     C                   ADD       1             CNT
+     C                   ADD       OWTOTA        AMT
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $UpdateARPOB
+      * UPDATE ARPOB-OBLIGATION BATCH CONTROL FILE EACH TIME AN
+      * OBLIGATION IS CREATED.
+      *******************
+====>C     $UpdateARPOB  BEGSR
+
+     C     OBBATN        CHAIN     ARROB                              99
+     C                   IF        NOT *in99
+     C                   Z-ADD     CNT           OBCNT
+     C                   Z-ADD     AMT           OBAMT
+     C                   EVAL      OBOBJE = wOBOBJEHold
+
+      *  Move the program variables to the screen/printer/database field
+     C                   UPDATE    ARROB
+     C                   END
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $CreateARPOX
+      *  WRITE DETAIL RECORD TO FILE ARPOX
+      *  REVIEW DOCUMENTATION WITHIN TECHNICAL USER'S GUIDE CONCERNING
+      *  INVOICING FIELDS INFORMATION FOR MORE INFO. REGARDING
+      *  GENERATION OF RECORDS WITHIN ARPOX
+      *******************
+     C     $CreateARPOX  BEGSR
+
+     C                   Z-ADD     1             OXLINN
+
+     C                   Z-ADD     OBBATN        OXBATN
+     C                   MOVE      OWOREF        OXOREF
+     C                   CLEAR                   OXPTNO
+     C                   EVAL      OXDESS = OWDESC
+     C                   EVAL      OXAMT = wInvTotal
+
+      * The following field should be initialized to zero unless
+      * this is a foreign currency batch AND the obligation's
+      * rate lock OWPCRL is set to "2".
+     C                   CLEAR                   OXAMTH
+
+     C                   CLEAR                   OXQTY
+     C                   CLEAR                   OXUOMC
+
+     C                   EVAL      OXGLDC = OWSLDC
+     C                   EVAL      OXARDC = OWARDC
+     C                   CLEAR                   OXUFL1
+     C                   CLEAR                   OXUFL2
+     C                   CLEAR                   OXUAM1
+     C                   CLEAR                   OXUAM2
+     C                   MOVE      '0'           OXERR
+
+      * The following two fields are only used when writing out the
+      * tax detail file.  For each record written to the Tax Detail
+      * file (ARPOY) a record is also written out to the Obligation
+      * Detail File (ARPOX).
+     C                   MOVE      '0'           OXCRTX
+     C                   CLEAR                   OXRLNN
+
+      * Move the program variables to the screen/printer/database field
+     C                   WRITE     ARROX
+
+     C                   ENDSR
+      /TITLE
+      *********************************************************************
+      *?                           $UpdateARPOW
+      * Update the ARPOW obligation record for the distributor credit.
+====>C     $UpdateARPOW  BEGSR
+
+      /FREE
+
+       Setll ( wDistOblig : ObBatN ) Arlow2 ;
+       ReadE ( wDistOblig : ObBatN ) Arlow2 ;
+
+       Dow Not %Eof(Arlow2) ;
+
+         wShip5A1 = %Subst( OwCuNo : 10 : 5) ;
+         EvalR wShip5A2 = %Char(wShip5) ;
+
+         If wShip5A1 = wShip5A2 ;
+           Leave ;
+         EndIf;
+
+         ReadE ( wDistOblig : ObBatN ) Arlow2 ;
+       EndDo;
+
+      /END-FREE
+
+     C*_*_*KDISTOBLIG    CHAIN     ARLOW2                             99
+      * Determine the invoice total
+     C                   EVAL      wInvTotal = B6SLSA - B6RTNA - B6BBKA
+     C                                    + B6TDIS + B6PDS$ - B6CNTV
+
+      * Determine the total obligation
+     C                   EVAL      OWTOTA = OWTOTA + wInvTotal
+
+      * Determine the AR amount
+     C                   EVAL      OWARA = OWARA + wInvTotal
+
+      * Determine the net sales
+     C                   EVAL      OWNETA = OWNETA + wInvTotal
+
+      * Determine the sales amount
+     C                   EVAL      OWSLSA = OWSLSA + wInvTotal
+
+     C                   CLEAR                   OWDESC
+     C                   SELECT
+     C                   WHEN      OWTOTA > 0
+     C                   MOVE      '001'         OWTRAN
+     C                   MOVEL(p)  CDescSales    OWDESC
+      *
+     C                   WHEN      OWTOTA < 0 and LJOBN = 'XARPOSTSLS'
+     C                             or OWTOTA < 0 and LJOBN = *blanks
+     C                   MOVE      '001'         OWTRAN
+     C                   MOVEL(p)  CCreditSales  OWDESC
+      *
+     C                   WHEN      OWTOTA < 0
+     C                   MOVE      '002'         OWTRAN
+     C                   MOVEL(p)  CCreditSales  OWDESC
+     C                   ENDSL
+
+      * no payment terms policy if a credit memo
+      * get recorded in OWPTPC
+JVC  C                   IF              OWTRAN =  '002'
+JVC  C                                    or OWTRAN =  '003'
+     C                   CLEAR                   OWPTPC
+     C                   ENDIF
+
+     C                   UPDATE    ARROW2
+
+     C                   ADD       wInvTotal     AMT
+
+
+     C                   ENDSR
+      /TITLE
+      *********************************************************************
+      *?                           $UpdateARPOX
+      * Update the ARPOX obligation record for the distory credit.
+====>C     $UpdateARPOX  BEGSR
+
+     C                   Z-ADD     1             OXLINN
+     C                   MOVE      OWOREF        OXOREF
+     C                   Z-ADD     OBBATN        OXBATN
+     C     KDISTOREF     CHAIN     ARLOX1                             99
+     C                   EVAL      OXDESS = OWDESC
+     C                   EVAL      OXAMT = OWTOTA
+     C                   UPDATE    ARROX1
+
+     C                   ENDSR
+      /TITLE
+      /TITLE
+      *********************************************************************
+      *********************************************************************
+      *?                           $GetDiscount
+      * Determine what the disount amount and due days are for this
+      * customer, if they get a discount
+      * NOTE: 4/6/99 both Invoices and Credit Memos flow into here
+      *       for determining due dates, etc.
+      *       Credit Memos have no discount amount nor discount date
+      *******************
+====>C     $GetDiscount  BEGSR
+
+      *
+     C                   IF        CUNANO <> *BLANKS
+     C     CUNANO        CHAIN     ARRNA                              99
+     C                   END
+
+      * Get Statement policy
+     C                   EXSR      $GETSTPC
+
+      * Use cust pymt terms policy
+     C                   SELECT
+     C                   WHEN      CUPTPC <> *BLANKS
+     C                   EVAL      OWPTPC = CUPTPC
+
+      * Use natl acct pymt terms policy
+     C                   WHEN      NAPTPC <> *BLANKS
+     C                   EVAL      OWPTPC = NAPTPC
+
+      * Use company pymt terms policy
+     C                   WHEN      COPTPC <> *BLANKS
+     C                   EVAL      OWPTPC = COPTPC
+
+      * Use entity pymt terms policy
+     C                   WHEN      SYPTPC <> *BLANKS
+     C                   EVAL      OWPTPC = SYPTPC
+     C                   ENDSL
+
+      * Get the terms policy record
+     C     OWPTPC        CHAIN     ARRPT                              99
+
+      * Record found
+     C                   IF        NOT *in99
+     C                   EXSR      $GetAsOfDate
+
+
+     C                   EVAL      OWOAOH = wOWOAOHHold
+     C                   EVAL      OWOAOE = wOWOAOEHold
+     C                   EVAL      OWOAO8 = wOWOAO8Hold
+
+      * determine the discount date
+JVC   * if not a credit memo
+     C                   IF        PTDIDY <> *zeros AND
+JVC  C                                   OWTRAN <> '002'
+
+JVC   * use AS OF Date for Aging
+JVC   *                        was OWDSCH = OWOBDH + PTDIDY
+JVC   *                        and OWDUEH = OWOBDH + PTNDDY
+JVC   * - - - - - - - - - - - - - - - - - - - - - - - - - - -
+JVC  C                   EVAL      OWDSCH = OWOAOH + PTDIDY
+     C                   Z-ADD     OWDSCH        #PDIN
+     C                   MOVE      'H'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C                   IF        #PERR = '0'
+     C                   Z-ADD     #PHDTE        OWDSCH
+     C                   MOVE      #PEDTE        OWDSCE
+     C                   Z-ADD     #P8DTE        OWDSC8
+     C                   ENDIF
+     C                   ENDIF
+
+      * determine the due date
+      * even IF IT IS a credit memo
+JVC  C                   EVAL      OWDUEH = OWOAOH + PTNDDY
+     C                   Z-ADD     OWDUEH        #PDIN
+     C                   MOVE      'H'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C                   IF        #PERR = '0'
+     C                   Z-ADD     #PHDTE        OWDUEH
+     C                   MOVE      #PEDTE        OWDUEE
+     C                   Z-ADD     #P8DTE        OWDUE8
+     C                   ENDIF
+
+      * Determine the discount
+      * if not a credit memo
+     C                   IF        PTDSCP <> *zeros AND
+JVC  C                                   OWTRAN <> '002'
+     C                   EVAL(h)   OWDSCA = wInvTotal * PTDSCP * .01
+     C                   ENDIF
+
+      * *in99
+     C                   ENDIF
+
+      * no payment terms policy if a credit memo
+      * get recorded in OWPTPC
+JVC  C                   IF              OWTRAN =  '002'
+JVC  C                                    or OWTRAN =  '003'
+     C                   CLEAR                   OWPTPC
+     C                   ENDIF
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $GetAsOfDate
+      * Get the As Of Date - The best guess of the actual billing date
+      *******************
+====>C     $GetAsOfDate  BEGSR
+
+      * Initialize work fields for this routine
+     C                   EVAL      wOWOBDHWork = wOWOBDHHold
+     C                   EVAL      work_PCDAY  = wOWOBDH_PCDAY
+     C                   EVAL      work_PMEND  = wOWOBDH_PMEND
+     C                   EVAL      work_PDAY   = wOWOBDH_PDAY
+
+      * Do this routine until you get an AS-OF-DATE >= Today
+     C                   DOU       1=0
+      * Get the "As Of Date" where Discount Date and Due Date
+      * start counting from
+
+      * Use the STPC_Type and lag days to determine billing date starting
+      *    from the obligation date.
+
+     C                   SELECT
+      * Determine next Monthly billing
+     C                   WHEN      wSTPC_Type = 'M'
+
+      * PMEND = day of end of month (ex. 30 or 31)
+      * PCDAY = day of obligation date (ex. 10 if oblig date is 2/10/99)
+     C                   EVAL      wOWOAOHHold =
+     C                                wOWOBDHWork +
+     C                                (work_PMEND - work_PCDAY) +
+     C                                wSTPC_Lag#
+
+      * Determine next Weekly billing
+     C                   WHEN      wSTPC_Type = 'W'
+
+      *  SAT.0     amount of days to add on to get SATURDAY (week-end)
+      *            Then Add lag days
+      *  PDAY = the name of the day of week (ex. SUN.)
+     C                   z-add     1             wX
+     C     work_PDAY     LOOKUP    ZDA(wX)                                99
+     C     *in99         IFEQ      *ON
+     C                   EVAL      wOWOAOHHold =
+     C                                           wOWOBDHWork +
+     C                                           ZD#(wX) +
+     C                                           wSTPC_Lag#
+     C                   ENDIF
+
+      * Determine next Daily billing
+     C                   WHEN      wSTPC_Type = 'D'
+     C                   EVAL      wOWOAOHHold =
+     C                                           wOWOBDHWork +
+     C                                           wSTPC_Lag#
+
+      * Determine next Bi-Monthly billing  (15th or EOM) + lag days
+     C                   WHEN      wSTPC_Type = 'B'
+      *   get 15th of same month as obligation date
+     C                   EVAL      wOWOBDH_15th =
+     C                                wOWOBDHWork -
+     C                                work_PCDAY + 15
+      *   get the billing date based on 15th
+     C                   EVAL      wOWOAOHHold =
+     C                                           wOWOBDH_15th +
+     C                                           wSTPC_Lag#
+      * If billing date is less than obligation date, then need to
+      *  use EOM
+     C                   IF        wOWOAOHHold < wOWOBDHWork
+     C                   EVAL      wOWOAOHHold =
+     C                                wOWOBDHWork +
+     C                                (work_PMEND - work_PCDAY) +
+     C                                wSTPC_Lag#
+     C                   ENDIF
+     C                   ENDSL
+
+      * get the day of week for as of date and make sure it's not SAT or SUN
+      *
+     C                   z-add     wOWOAOHHold   #PDIN
+     C                   MOVE      'H'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C     #PERR         IFEQ      '0'
+     C                   EVAL      wOWOAOH_PDAY = #PDAY
+     C                   ELSE
+     C                   CLEAR                   wOWOAOH_PDAY
+     C                   ENDIF
+      * special routine in case month end falls on a Saturday or Sunday
+     C                   IF        wOWOAOH_PDAY = 'SAT.'
+     C                   Add       2             wOWOAOHHold
+     C                   ENDIF
+     C                   IF        wOWOAOH_PDAY = 'SUN.'
+     C                   Add       1             wOWOAOHHold
+     C                   ENDIF
+
+      * Check that As Of Date is greater than today
+      *  unless type and lag = D 0 (this always gets an as of date equal
+      *                                to the invoice date)
+     C                   IF        wOWOAOHHold > TodayH or
+     C                             (wSTPC_Type = 'D') and (wSTPC_Lag# = 0)
+     C                   LEAVE
+     C                   ELSE
+      * If calculated As of Date is not greater than today
+      *  then increase the Obligation date (for this routine only) and
+      *  re-calculate the new As of Date
+
+      * If billing is daily, than increase obligation date by 1 day
+      * otherwise, increase by 1 week.
+     C                   IF        wSTPC_Type = 'D'
+     C                   EVAL      wOWOBDHWork = wOWOBDHWork + 1
+     C                   ELSE
+     C                   EVAL      wOWOBDHWork = wOWOBDHWork + 7
+     C                   ENDIF
+
+     C                   z-add     wOWOBDHWork   #PDIN
+     C                   MOVE      'H'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C     #PERR         IFEQ      '0'
+     C                   EVAL      wOWOBDHWork = #PHDTE
+     C                   EVAL      work_PCDAY = #PCDAY
+     C                   EVAL      work_PMEND = #PMEND
+     C                   EVAL      work_PDAY  = #PDAY
+     C                   ELSE
+     C                   CLEAR                   wOWOBDHWork
+     C                   CLEAR                   work_PCDAY
+     C                   CLEAR                   work_PMEND
+     C                   CLEAR                   work_PDAY
+     C                   ENDIF
+     C                   ENDIF
+     C                   ENDDO
+
+      * Once the As of Date is determined,
+      * get the AS OF date from the Hundred Year Date
+      *
+     C                   z-add     wOWOAOHHold   #PDIN
+     C                   MOVE      'H'           #FMT
+     C                   MOVE      'MDY'         #FFDHI
+     C                   CALL      'AMGCDATE'    ADCPRM
+
+     C     #PERR         IFEQ      '0'
+     C                   EVAL      wOWOAOHHold = #PHDTE
+     C                   EVAL      wOWOAOEHold = #PEDTE
+     C                   EVAL      wOWOAO8Hold = #P8DTE
+     C                   ELSE
+     C                   CLEAR                   wOWOAOHHold
+     C                   CLEAR                   wOWOAOEHold
+     C                   CLEAR                   wOWOAO8Hold
+     C                   ENDIF
+
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $GetSTPC
+      * Get the ARPST record to use, this record' description will
+      * contain the billing type and # of lag days.
+      *******************
+====>C     $GetSTPC      BEGSR
+
+
+      * Use cust statement policy if not blank
+     C                   SELECT
+     C                   WHEN      CUSTPC <> *BLANKS
+     C                   EVAL      STSTPC = CUSTPC
+
+      * Use natl acct statement policy
+     C                   WHEN      NASTPC <> *BLANKS
+     C                   EVAL      STSTPC = NASTPC
+
+      * Use company statement policy
+     C                   WHEN      COSTPC <> *BLANKS
+     C                   EVAL      STSTPC = COSTPC
+
+      * Use entity statement policy
+     C                   WHEN      SYSTPC <> *BLANKS
+     C                   EVAL      STSTPC = SYSTPC
+     C                   ENDSL
+
+     C                   CLEAR                   STDESC
+     C                   CLEAR                   wSTPC_Type
+     C                   CLEAR                   wSTPC_LagA
+      * Get the statement policy record
+     C     STSTPC        CHAIN     ARRST                              99
+
+      * Parse out the billing type and lag days from the description field
+      *   starting at the (:) in the description.
+
+     C                   IF        STDESC <> *BLANK
+     C                   EVAL      wFind = %scan(':':STDESC)
+     C                   IF        wFind > 0
+     C                   EVAL      wSTPC_Type = %subst(STDESC: wFind+1: 1)
+     C                   EVAL      wSTPC_LagA = %subst(STDESC: wFind+2: 2)
+     C                   ENDIF
+     C                   ENDIF
+
+      * If either the type or lag days were invalid or not found,
+      *  then use default of week and 10 days lag
+     C                   IF        wSTPC_Type <> 'M' and
+     C                             wSTPC_Type <> 'W' and
+     C                             wSTPC_Type <> 'D' and
+     C                             wSTPC_Type <> 'B'
+     C                   EVAL      wSTPC_Type = 'W'
+     C                   EVAL      wSTPC_LagA = '10'
+     C                   ENDIF
+      *
+      * Right justify lag days if needed
+     C                   IF        %subst(wSTPC_LagA: 2) = *blank  and
+     C                             %subst(wSTPC_LagA: 1) <> *blank
+     C                   EVAL      wSTPC_one = wSTPC_LagA
+     C                   EVAL      %subst(wSTPC_LagA: 2) = wSTPC_one
+     C                   EVAL      %subst(wSTPC_LagA: 1) = '0'
+     C                   ENDIF
+      * Place 0 in 1st position if blank
+     C                   IF        %subst(wSTPC_LagA: 2) <> *blank  and
+     C                             %subst(wSTPC_LagA: 1) = *blank
+     C                   EVAL      %subst(wSTPC_LagA: 1) = '0'
+     C                   ENDIF
+
+      * Verify lag days are valid (use default if not valid)
+     C                   IF        wSTPC_LagA < '00' or
+     C                             wSTPC_LagA >  '99'
+     C                   EVAL      wSTPC_Type = 'W'
+     C                   EVAL      wSTPC_LagA = '10'
+     C                   ENDIF
+
+      * Setup numeric lag value
+     C                   MOVE      wSTPC_LagA    wSTPC_Lag#
+     C
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $GetRAPW0250
+      * Find the RAPW0250 record, this record will have the original
+      * obligation reference #.
+      *******************
+====>C     $GetRAPW0250  BEGSR
+
+      * Find the work file record
+     C     KRAPW0250     CHAIN     RW0250O1                           99
+
+      * Record found
+     C                   IF        NOT *in99
+
+      * Move the reference # to the obligation file
+     C                   SELECT
+     C                   WHEN      O1REFA <> *zeros
+     C                   EVAL      OWREFA = O1REFA
+
+     C                   WHEN      O1OREF <> *zeros
+     C                   EVAL      OWREFA = O1OREF
+     C                   ENDSL
+
+      * If this is a debit, make sure the Cross ref # is blank
+     C                   IF        O1TYPD = 'D'
+     C                              and LJOBN <> 'XARPOSTNON'
+     C                   CLEAR                   OWREFA
+     C                   ENDIF
+
+      * Call RAR0257 to get the original invoice #
+     C                   EVAL      PINV#Out = B6INV#
+     C                   EVAL      PCUST#Out = B6CNB7
+     C                   EVAL      PADATOut = B6ADAT
+     C                   EXSR      $GetRef#
+
+      * The return flag is good
+     C                   IF        PStatus = 'OK'
+     C                   EVAL      OWORNO = POrnoIn
+
+     C                   ELSE
+      * Original obligation WAS NOT found
+     C                   EVAL      wA9 = %TRIM(%EDITC(O1INVO:'Z'))
+     C                   MOVE(p)   wA9           OWORNO
+     C                   ENDIF
+     C                   ENDIF
+
+     C                   IF        OWTRAN = '001'
+     C                              and OWREFA <> *zeros
+     C                   MOVE      '003'         OWTRAN
+     C                   CLEAR                   OWPTPC
+     C                   CLEAR                   OWDSCA
+     C                   CLEAR                   OWDSCH
+     C                   CLEAR                   OWDSCE
+     C                   CLEAR                   OWDSC8
+     C                   ENDIF
+
+      * Change the description
+     C                   SELECT
+     C                   WHEN      LJOBN = 'XARPOSTUNV'
+     C                              and OWTRAN = '001'
+     C                   MOVEL(p)  CDescUC       OWDESC
+
+     C                   WHEN      LJOBN = 'XARPOSTUNV'
+     C                              and OWTRAN = '002'
+     C                   MOVEL(p)  CCreditUC     OWDESC
+
+     C                   WHEN      LJOBN = 'XARPOSTUNV'
+     C                              and OWTRAN = '003'
+     C                   MOVEL(p)  CDebitUC      OWDESC
+
+     C                   WHEN      LJOBN = 'XARPOSTNON'
+     C                              and OWTRAN = '001'
+     C                   MOVEL(p)  CDescNSP      OWDESC
+
+     C                   WHEN      LJOBN = 'XARPOSTNON'
+     C                              and OWTRAN = '002'
+     C                   MOVEL(p)  CCreditNSP    OWDESC
+     C                   EVAL      OWSLDC = O1ACCT
+
+     C                   WHEN      LJOBN = 'XARPOSTNON'
+     C                              and OWTRAN = '003'
+     C                   MOVEL(p)  CDebitNSP     OWDESC
+     C                   EVAL      OWSLDC = O1ACCT
+     C                   ENDSL
+
+
+JVC3  * of the paired DB & CM of the NonStd Price Co-op,
+   3  * for NSP and NSP-COOP, at *INLR time,
+   3  * you will have to call RAP0260/RAR0260 to adjust the discount amt
+   3  * for the original invoice plus this OW and other OH CM/DMs found.
+   3 C                   MOVE      'Y'           P_0260
+
+     C                   CLEAR                   *in99
+     C                   ENDSR
+      *****************************************************************
+      *?                           $GetRef#
+      * Call the program to get the INFINIUM data
+      *******************
+     C     $GetRef#      BEGSR
+
+     C                   CLEAR                   PREF#Out
+     C                   CLEAR                   PREF#In
+     C                   CLEAR                   POrgREF#In
+     C                   CLEAR                   POrnoIn
+     C                   CLEAR                   PFlagsIn
+     C                   CLEAR                   PStatus
+
+     C                   CALL      'RAR0257C'    PRAR0257
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           $DetPeriod
+      * Determine the Accounting period, this is identical to the logic
+      * used to get the GL accounting period found in RAR0213
+      *******************
+     C     $DetPeriod    BEGSR
+      *
+      * CALL THE API
+     C                   CALL      CGLPER
+     C                   PARM                    PODATE
+     C                   PARM                    PIYYYY
+     C                   PARM                    PIPER
+
+      * DETERMINE THE PERIOD LIMITS
+     C                   EXSR      $PeriodLimits
+
+      * DO THE PERIOD VALIDATION CHECK
+     C                   EXSR      $PeriodCheck
+
+     C                   ENDSR
+      **********************************************************************
+      *?                           $PeriodLimits
+      * Bring in the gladta data area and then determine the maximum and
+      * minimum limits for the posting period
+      *******************
+     C     $PeriodLimits BEGSR
+
+     C                   CLEAR                   wPyyyy
+     C                   CLEAR                   wPperd
+     C                   CLEAR                   wYmax
+     C                   CLEAR                   wPmax
+
+      * Get the data area POSTING PERIOD
+     C                   IN        GLADTA
+
+     C                   IF        SPYEAR > *ZEROS
+     C                              and  SPPERD > *ZEROS
+     C                   MOVE      SPYEAR        wPyyyy
+     C                   MOVE      SPPERD        wPperd
+     C                   EVAL      wYmax = wPyyyy
+     C                   EVAL      wPmax = wPperd
+     C                   EVAL      wPmax = wPmax + 2
+
+      * SET THE MAXIMUM POSTING PERIOD
+     C                   IF        wPmax > 12
+     C                   EVAL      wPmax = wPmax - 12
+     C                   EVAL      wYmax = wYmax + 1
+     C                   ENDIF
+     C                   ENDIF
+
+     C                   ENDSR
+      **********************************************************************
+      *?                           $PeriodCheck
+      * Check the period returned from DPPGLPPERD with what is in the data
+      * area. If the period from the API is earlier than the period in the
+      * data area, use the period from the data area.
+      * program.
+      * Then, if the period returned is more than the maximum allowed
+      * (work fields WYMAX and WPMAX), use the period from the data area.
+      *******************
+====>C     $PeriodCheck  BEGSR
+
+      * Compare the year.
+     C                   IF        PIYYYY < wPyyyy
+      * API is earlier than the data area
+     C                   EVAL      PIYYYY = wPyyyy
+     C                   EVAL      PIPER = wPperd
+
+     C                   ELSE
+      * Same year, check the period.
+     C                   IF        PIYYYY = wPyyyy
+     C                               and  PIPER < wPperd
+      * API is earlier than the data area
+     C                   EVAL      PIYYYY = wPyyyy
+     C                   EVAL      PIPER = wPperd
+     C                   ENDIF
+     C                   ENDIF
+
+      * Now check for maximum.
+     C                   IF        PIPER > wPmax
+
+     C                   IF        PIYYYY > wYmax
+     C                   EVAL      PIYYYY = wPyyyy
+     C                   EVAL      PIPER = wPperd
+     C                   ENDIF
+
+     C                   ELSE
+     C                   IF        PIYYYY > wYmax
+     C                   EVAL      PIYYYY = wPyyyy
+     C                   EVAL      PIPER = wPperd
+     C                   ENDIF
+     C                   ENDIF
+
+     C                   ENDSR
+      *****************************************************************
+      *?                           $GetSalesman
+      * Get the correct division code for this route
+      *******************
+     C     $GetSalesman  BEGSR
+
+      * Get the original division #
+
+     C                   Z-ADD     B6CNB7        XZCUSHIP
+     C     XZCUSHIP      CHAIN     ARCUST                             99
+      * Record found
+     C                   IF        NOT *in99
+     C                   EVAL      wA5 = %trim(%editc(XZCUDIV:'Z'))
+     C                   MOVEL     wA5           OWSMAN
+     C                   ENDIF
+
+     C                   CLEAR                   *in99
+     C                   ENDSR
+      *********************************************************************
+      *?                           $PrintOvrFlw
+      * OVERFLOW ROUTINE
+      *******************
+====>C     $PrintOvrFlw  BEGSR
+     C                   WRITE     BATCH                                51
+     C                   ENDSR
+      *********************************************************************
+      *?                           $EndProgram
+      * TERMINATION ROUTINE
+      *******************
+====>C     $EndProgram   BEGSR
+
+      * Check for print over flow
+     C                   IF        STLINE >= wFO4 or *in51
+     C                   EXSR      $PrintOvrFlw
+     C                   ENDIF
+
+      *  Move the program variables to the screen/printer/database field
+     C                   MOVE      '1'           FSEFLG
+     C                   MOVEL     'TOTAL   '    FSEFMT
+     C                   EXSR      $FSEZDP
+     C                   WRITE     TOTAL                                51
+     C                   WRITE     ENDRPT                               51
+
+JVC3 C* 08/09/99 JVC3 added the cleanup pgm RAP0260/RAR0260
+   3 C* to change the Discount Amt of the Original Invoice
+   3 C* for Price Adjustments of Referenced CM and DB
+   3 C     P_0260        IFEQ      'Y'
+   3 C                   CLOSE     ARLOH
+   3 C                   CLOSE     ARLOW
+   3 C                   Z-ADD     OWBATN        POWBATN
+   3 C                   CALL      'RAP0260'     PRAP0260
+   3 C                   ENDIF
+
+       IF %OPEN(ARTOBU01);
+          CLOSE  ARTOBU01;
+       ENDIF;
+
+        // Need to retain a copy of report if Division 52
+        // report is deleted after 24 hrs.
+          IF Ldiv = '052' AND
+             (LglSource = 'PAYBYSCAN' OR
+              LglSource = 'NORANDSALE' OR
+              LglSource = 'MANUALSALE');
+            EmailReport();
+          ENDIF;
+     C                   EVAL      *INLR = *on
+     C                   RETURN
+     C                   ENDSR
+      *********************************************************************
+      *?                           $FSEZDP
+      * Execute FSE/ZDP requirements
+      *******************
+     C     $FSEZDP       BEGSR
+
+      * Define required fields for this subroutine
+     C                   MOVE      FSEFLG        FSEFLG            1
+     C                   MOVE      FSEFMT        FSEFMT           10
+     C                   MOVE      QQA172        QQA172           17 2
+     C                   Z-ADD     ZDPAMT        ZDPAMT           21 0
+     C                   Z-ADD     FSEAMT        FSEAMT           21 2
+     C                   Z-ADD     ZDPRND        ZDPRND            1 0
+
+      * Moving values TO the screen/report or database
+B001 C     FSEFLG        IFEQ      '1'
+
+B002 C     FSEFMT        IFEQ      'TOTAL   '
+     C                   MOVE      OBPCC         EDTCUR
+     C                   EXSR      CHKIDP
+     C                   MOVE      ZDPFLG        *IN39
+
+     C                   Z-ADD     AMT           FSE001
+     C                   Z-ADD     AMT           ZDP001
+E002 C                   ENDIF
+
+B002 C     FSEFMT        IFEQ      'INVOIC  '
+     C                   MOVE      OBPCC         EDTCUR
+     C                   EXSR      CHKIDP
+     C                   MOVE      ZDPFLG        *IN39
+     C                   Z-ADD     wInvTotal     FSE002
+     C                   Z-ADD     wInvTotal     ZDP002
+E002 C                   ENDIF
+E002 C                   ENDIF
+
+     C                   ENDSR
+      *********************************************************************
+      * Routines required for FSE/ZDP handling
+     C/COPY ARCPYSRC,$FSEZDP
+
+ ==> C/COPY ARCPYSRC,$INCLUDE
+      *********************************************************************
+      *********************************************************************
+      *?                           $Define
+      * Non-executable code
+      *******************
+====>C     $Define       BEGSR
+
+     C     *ENTRY        PLIST
+     C                   PARM                    pIsSBT
+
+      * Parm passed to date processor
+     C     ADCPRM        PLIST
+     C                   PARM                    DTPARM
+
+     C     KARLCU        KLIST
+     C                   KFLD                    OWCO
+     C                   KFLD                    OWCUNO
+
+     C     KRAPW0250     KLIST
+     C                   KFLD                    B6CNB7
+     C                   KFLD                    B6INV#
+     C                   KFLD                    B6ADAT
+
+     C     KW0250SB      KLIST
+     C                   KFLD                    F7SBTS
+     C                   KFLD                    F7CNB7
+     C                   KFLD                    F7DDAT
+     C                   KFLD                    F7OBNO
+
+     C     KDISTOBLIG    KLIST
+     C                   KFLD                    wDISTOBLIG
+     C                   KFLD                    OBBATN
+
+     C     KW250B        KLIST
+     C                   KFLD                    F5OBNO
+     C                   KFLD                    F5BATN
+
+     C     KDISTBATN     KLIST
+     C                   KFLD                    GIDIV#
+     C                   KFLD                    B6RTEN
+     C                   KFLD                    B6SDAT
+     C                   KFLD                    B6SNR1
+
+     C     KSBTDIST      KLIST
+     C                   KFLD                    F7DIV#
+     C                   KFLD                    B6RTEN
+     C                   KFLD                    B6SDAT
+     C                   KFLD                    B6SNR1
+     C                   KFLD                    B6ADAT
+     C                   KFLD                    B6CNB7
+     C                   KFLD                    B6INV#
+     C                   KFLD                    B6SNR2
+
+     C     KDISTOREF     KLIST
+     C                   KFLD                    OXBATN
+     C                   KFLD                    OXOREF
+     C                   KFLD                    OXLINN
+
+      * Parm for call to RAR0257
+     C     PRAR0257      PLIST
+     C                   PARM                    PCUST#Out
+     C                   PARM                    PADATOut
+     C                   PARM                    PINV#Out
+     C                   PARM                    PREF#Out
+     C                   PARM                    PREF#In
+     C                   PARM                    POrgREF#In
+     C                   PARM                    PRegister
+     C                   PARM                    POrnoIn
+     C                   PARM                    PFlagsIn
+     C                   PARM                    PStatus
+
+JVC3 C* parms for RAP0260/RAR0260
+JVC3 C     PRAP0260      PLIST
+   3 C                   PARM                    POWBATN
+   3 C                   PARM                    PSTS
+
+     C     *LIKE         DEFINE    OBINPH        TODAYH
+     C     *LIKE         DEFINE    OBINPE        TODAYE
+     C     *LIKE         DEFINE    QQA172        AMT
+
+     C                   ENDSR
+      *********************************************************************
+      *?                           *INZSR
+      * Initialization subroutine
+      *******************
+====>C     *INZSR        BEGSR
+
+       IF NOT %OPEN(ARTOBU01);
+          OPEN ARTOBU01;
+       ENDIF;
+
+      * Bring in LDA
+     C                   IN        LDA
+
+      * FO4 - SET PRINTER OVERFLOW FOR 4 CARRIAGE RETURNS
+     C                   EVAL      wFO4 = STLP - 4
+     C                   IF        STOA > *zeros and STOA < wFO4
+     C                   EVAL      wFO4 = STOA
+     C                   END
+     C                   EVAL      wFO4 = wFO4 - 3
+     C                   EVAL      STLINE = 66
+
+      /FREE
+
+       wCODE = 'DISTCUSTYP' ;
+       SETLL wCODE DPPCODEVAL ;
+
+       FOR wIDX = 1 TO %ELEM(zCUSTTYPE) ;
+         READE wCODE DPPCODEVAL ;
+
+         IF %EOF(DPPCODEVAL) ;
+           LEAVE ;
+         ENDIF;
+
+         zCUSTTYPE(wIDX) = CV_NUMVAL ;
+       ENDFOR;
+
+      /END-FREE
+
+     C                   ENDSR
+
+14272  // ---------------------------------------------------------------------
+       // Initialize
+       Dcl-proc Initialize;
+
+         Exec SQL
+           DROP TABLE QTEMP.DISTOBLIG;
+
+         // List of distributor obligations in this batch.
+         Exec SQL
+           CREATE TABLE QTEMP.DISTOBLIG (
+             OB_OBREF DEC (11,0) NOT NULL WITH DEFAULT
+             );
+
+       End-proc;
+
+14272  // ---------------------------------------------------------------------
+14272  // Update Distributor Credit Log Xref Obligation keys.
+14272  Dcl-Proc UpdCrdXrefOblig;
+
+       //Dcl-s AlreadyLogged ind;
+
+14272  Exec SQL
+14272    UPDATE EDP882CR
+14272    SET D_OBLIG = :wDistOblig,
+           D_OBDATE = :wDistObDate80,
+14272      D_OBREF = :wDistOref
+14272    WHERE D_B6DIV# = :D_B6DIV#
+14272      AND D_B6RTEN = :D_B6RTEN
+14272      AND D_B6SDAT = :D_B6SDAT
+14272      AND D_B6SNR1 = :D_B6SNR1
+14272      AND D_B6CNB7DS = :D_B6CNB7DS
+14272      //AND D_B6ADATDS = :D_B6ADATDS
+14272      //AND D_B6INV#DS = :D_B6INV#DS
+14272      AND D_B6SOLDDS = :D_B6SOLDDS;
+
+       // Build list of obligations created.
+       //Exec SQL
+       //  SELECT DISTINCT '1'
+       //  INTO AlreadyLogged
+       //  FROM QTEMP.DISTOBLIG
+       //  WHERE OB_OBREF = :wDistOref;
+
+       //If NOT AlreadyLogged;
+       If wDistOref <> 0;
+         Exec SQL
+           INSERT INTO QTEMP.DISTOBLIG
+           VALUES(:wDistOref);
+       Endif;
+       //Endif;
+
+14272  End-proc;
+
+14272  // ---------------------------------------------------------------------
+14272  // Update Distributor Credit Log Xref Invoice Total.
+14272  Dcl-Proc UpdCrdXrefTot;
+
+       Dcl-s DIST_OBREF like(D_OBREF);
+
+       // Read through list of obligations collected during detail process.
+       Exec SQL
+         DECLARE OBLIGCSR CURSOR FOR
+         SELECT DISTINCT OB_OBREF
+         FROM QTEMP.DISTOBLIG;
+
+       Exec SQL
+         OPEN OBLIGCSR;
+
+       Exec SQL
+         FETCH NEXT FROM OBLIGCSR
+         INTO :DIST_OBREF;
+
+       Dow SqlState = SqlSuccess;
+
+         // Update all credits with total amounts from work file.
+         Exec SQL
+           UPDATE EDP882CR CR
+           SET CR.D_INVTOT =
+             (SELECT W.OWTOTA
+             FROM ARPOW W
+             WHERE W.OWOREF = :DIST_OBREF
+             )
+           WHERE CR.D_OBREF = :DIST_OBREF;
+
+         Exec SQL
+           FETCH NEXT FROM OBLIGCSR
+           INTO :DIST_OBREF;
+
+       Enddo;
+
+       Exec SQL
+         CLOSE OBLIGCSR;
+
+       //Clear D_INVTOT;
+       //prev_OBLIG = D_OBLIG;
+       //prev_OBREF = D_OBREF;
+
+14272  //Exec SQL
+14272  //  UPDATE EDP882CR
+14272  //    SET D_INVTOT = :wInvTotal
+14272  //  WHERE D_B6DIV# = :D_B6DIV#
+14272  //    AND D_B6RTEN = :D_B6RTEN
+14272  //    AND D_B6SDAT = :D_B6SDAT
+14272  //    AND D_B6SNR1 = :D_B6SNR1
+14272  //    AND D_B6CNB7DS = :D_B6CNB7DS
+14272  //    AND D_B6ADATDS = :D_B6ADATDS
+14272  //    AND D_B6INV#DS = :D_B6INV#DS
+14272  //    AND D_B6SOLDDS = :D_B6SOLDDS;
+
+14272  End-proc;
+
+       //Called to insert EU Customer Obligations into ARPSTMT. EU Customers
+       //Will have the CZONE = 90000 in ARPCUST. This will be an 'unfinished'
+       //record that we insert, and later filled in via RAR0016 (export print).
+       Dcl-proc MakeEntryToARPSTMT;
+         Dcl-ds arpcustd ExtName('ARPCUST') qualified inz End-Ds;
+         dcl-ds arpstmtd ExtName('ARPSTMT') qualified inz End-Ds;
+         Clear arpcustd;
+         Clear arpstmtd;
+
+         arpstmtd.ST_SHIP = %dec(OWCUNO : 5 : 0);
+
+         EXEC SQL SELECT * INTO :arpcustd FROM ARPCUST
+         WHERE CUSHIP = :arpstmtd.ST_SHIP;
+         if arpcustd.CZONE = 90000;
+           arpstmtd.ST_SOLD = arpcustd.CUSOLD;
+           arpstmtd.ST_INVDAT = B6ADAT;
+           arpstmtd.ST_INV# = B6INV#;
+           arpstmtd.ST_INVTYPE = '';
+           arpstmtd.ST_CREAT = %Timestamp();
+           arpstmtd.ST_DOPEN = %dec(OWTOTA : 11 : 2);
+           arpstmtd.ST_DTOTAL = %dec(OWTOTA : 11 : 2);
+           arpstmtd.ST_OREF = OWOREF;
+           arpstmtd.ST_OBNO = OWOBNO;
+           arpstmtd.ST_CHAN = 'int';
+
+           EXEC SQL INSERT INTO ARPSTMT VALUES (:arpstmtd);
+         EndIf;
+       End-proc;
+
+       // --------------------------------------------------
+       // Procedure name: EmailReport
+       // Purpose:  Email Spool file (Report)
+       // Returns:
+       // --------------------------------------------------
+       DCL-PROC EmailReport;
+
+         DCL-S @EMAIL  CHAR(100);
+         DCL-S pSplf   CHAR(10)   INZ('ARTOBU01');
+
+         pSubject = 'Central Bill Report';
+         pMessage = ' AR2000 Obligation Report attached. \n\n'
+                   + '--SPOOL FILE ARTOBU01 \n\n --- Pgm: RAR0250';
+
+         Exec Sql Select CV_TXTVAL into :@EMAIL  From DPPCODEVAL
+           Where CV_CODE = 'RAR0250EML';
+
+         pAddr = %TRIM(@EMAIL );
+         IF PADDR <> *BLANKS;
+           DppEmailRS (pAddr : pSubject : pMessage : pSplf) ;
+         ENDIF;
+       END-PROC ;
+
+**    *ZDA=4A, ZD#=1N
+SAT.0     amount of days to add on to get SATURDAY
+SUN.6     Then Add +3 +7 days for the TUESDAY a week later
+MON.5
+TUE.4
+WED.3
+THU.2
+FRI.1
