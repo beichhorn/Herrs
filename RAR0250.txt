@@ -307,6 +307,9 @@ JVC3  * JVC4 08/13/99 BUG: OWUDT8 Settlement Date was getting OBDT8, etc.
        //      This is going to add an unfinished record, and later fill it in
        //      by RAR0016.
        //
+       // BJE  04/18/2024 Replace zDistributors array with QTEMP/DIST250 to
+       //      eliminate an array subscript error. (BJE01)
+       //
 14272  // H OPTION(*NODEBUGIO : *SRCSTMT)
 14272  ctl-opt OPTION(*NODEBUGIO: *SRCSTMT) ACTGRP(*CALLER);
 
@@ -529,8 +532,8 @@ JVC3 D* which is the flag from ARPOX that NSP adjustments occurred
      D zCUSTTYPE       S              3  0 DIM(10)
      D wCODE           S             10
      D wIDX            S              3  0
-     D zDistributors   S              5P 0 DIM(100)
-     D wDistCounter    S              5U 0 Inz(0)
+     D* zDistributors   S              5P 0 DIM(100)
+     D* wDistCounter    S              5U 0 Inz(0)
      D wShip5A1        S              5A
      D wShip5A2        S              5A
      DiThisIsSBTBatch  S               N
@@ -1126,15 +1129,12 @@ JVC  C                   SELECT
 
       /FREE
 
-       wIdx = %LookUp(wShip5:zDistributors) ;
-
-       If wIdx > 0 ;
-         wFirstDist = *Off ;
-       Else ;
-         wDistCounter += 1 ;
-         zDistributors(wDistCounter) = wShip5 ;
+       exec sql insert into QTEMP.DIST250 values(:wShip5);
+       If sqlstate = SQLSuccess;
          wFirstDist = *On ;
-       EndIf;
+       Else;
+         wFirstDist = *Off ;
+       Endif;
 
       /END-FREE
 
@@ -2530,7 +2530,7 @@ JVC3 C     PRAP0260      PLIST
 
       /FREE
 
-       wCODE = 'DISTCUSTYP' ;
+       wCODE = 'RAR0250';
        SETLL wCODE DPPCODEVAL ;
 
        FOR wIDX = 1 TO %ELEM(zCUSTTYPE) ;
@@ -2559,6 +2559,22 @@ JVC3 C     PRAP0260      PLIST
            CREATE TABLE QTEMP.DISTOBLIG (
              OB_OBREF DEC (11,0) NOT NULL WITH DEFAULT
              );
+
+         Exec SQL
+           DROP INDEX QTEMP.IDX_DIST250;
+
+          Exec SQL
+           DROP TABLE QTEMP.DIST250;
+
+          // List of distributors in this batch
+         Exec SQL
+           CREATE TABLE QTEMP.DIST250 (
+             shipTo DEC (5,0) NOT NULL WITH DEFAULT
+             );
+
+         Exec SQL
+           CREATE UNIQUE INDEX QTEMP.IDX_DIST250
+             ON QTEMP.DIST250 (shipTo);
 
        End-proc;
 
@@ -2659,19 +2675,24 @@ JVC3 C     PRAP0260      PLIST
 
        //Called to insert EU Customer Obligations into ARPSTMT. EU Customers
        //Will have the CZONE = 90000 in ARPCUST. This will be an 'unfinished'
-       //record that we insert, and later filled in via RAR0016 (export print).
+       //record that we insert, and later fill in via RAR0016 (export print).
        Dcl-proc MakeEntryToARPSTMT;
          Dcl-ds arpcustd ExtName('ARPCUST') qualified inz End-Ds;
          dcl-ds arpstmtd ExtName('ARPSTMT') qualified inz End-Ds;
+         dcl-s foundSql packed(1:0) INZ(0);
          Clear arpcustd;
          Clear arpstmtd;
 
+         Monitor;
          arpstmtd.ST_SHIP = %dec(OWCUNO : 5 : 0);
 
          EXEC SQL SELECT * INTO :arpcustd FROM ARPCUST
          WHERE CUSHIP = :arpstmtd.ST_SHIP;
          if arpcustd.CZONE = 90000;
            arpstmtd.ST_SOLD = arpcustd.CUSOLD;
+           if arpstmtd.ST_SOLD=0;
+             arpstmtd.ST_SOLD = arpstmtd.ST_SHIP;
+           EndIf;
            arpstmtd.ST_INVDAT = B6ADAT;
            arpstmtd.ST_INV# = B6INV#;
            arpstmtd.ST_INVTYPE = '';
@@ -2682,8 +2703,18 @@ JVC3 C     PRAP0260      PLIST
            arpstmtd.ST_OBNO = OWOBNO;
            arpstmtd.ST_CHAN = 'int';
 
-           EXEC SQL INSERT INTO ARPSTMT VALUES (:arpstmtd);
+           //check to ensure it doesn't add the same one
+           EXEC SQL SELECT 1 INTO :foundSql from ARPSTMT
+           where ST_INV# = :B6INV# AND ST_INVDAT = :B6ADAT AND
+           ST_SHIP = :arpstmtd.ST_SHIP AND ST_INVTYPE = '';
+           if foundSql <> 1;
+             EXEC SQL INSERT INTO ARPSTMT VALUES (:arpstmtd);
+           EndIf;
          EndIf;
+       On-Error;
+
+       EndMon;
+
        End-proc;
 
        // --------------------------------------------------
