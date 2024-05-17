@@ -529,8 +529,6 @@ JVC3 D* which is the flag from ARPOX that NSP adjustments occurred
      D zCUSTTYPE       S              3  0 DIM(10)
      D wCODE           S             10
      D wIDX            S              3  0
-     D zDistributors   S              5P 0 DIM(100)
-     D wDistCounter    S              5U 0 Inz(0)
      D wShip5A1        S              5A
      D wShip5A2        S              5A
      DiThisIsSBTBatch  S               N
@@ -710,7 +708,6 @@ JVC  C                   CLEAR                   AMT
 
       * WRITE THE NEW OBLIGATION RECORD TO FILE ARPOW
      C                   EXSR      $CreateARPOW
-                         MakeEntryToARPSTMT();
 14272                    // Update Distributor Credit Log Xref Obligation keys.
 14272                    UpdCrdXrefOblig();
 
@@ -1125,16 +1122,6 @@ JVC  C                   SELECT
      C                   ENDIF
 
       /FREE
-
-       wIdx = %LookUp(wShip5:zDistributors) ;
-
-       If wIdx > 0 ;
-         wFirstDist = *Off ;
-       Else ;
-         wDistCounter += 1 ;
-         zDistributors(wDistCounter) = wShip5 ;
-         wFirstDist = *On ;
-       EndIf;
 
       /END-FREE
 
@@ -2530,7 +2517,6 @@ JVC3 C     PRAP0260      PLIST
 
       /FREE
 
-       wCODE = 'DISTCUSTYP' ;
        SETLL wCODE DPPCODEVAL ;
 
        FOR wIDX = 1 TO %ELEM(zCUSTTYPE) ;
@@ -2656,35 +2642,6 @@ JVC3 C     PRAP0260      PLIST
 14272  //    AND D_B6SOLDDS = :D_B6SOLDDS;
 
 14272  End-proc;
-
-       //Called to insert EU Customer Obligations into ARPSTMT. EU Customers
-       //Will have the CZONE = 90000 in ARPCUST. This will be an 'unfinished'
-       //record that we insert, and later filled in via RAR0016 (export print).
-       Dcl-proc MakeEntryToARPSTMT;
-         Dcl-ds arpcustd ExtName('ARPCUST') qualified inz End-Ds;
-         dcl-ds arpstmtd ExtName('ARPSTMT') qualified inz End-Ds;
-         Clear arpcustd;
-         Clear arpstmtd;
-
-         arpstmtd.ST_SHIP = %dec(OWCUNO : 5 : 0);
-
-         EXEC SQL SELECT * INTO :arpcustd FROM ARPCUST
-         WHERE CUSHIP = :arpstmtd.ST_SHIP;
-         if arpcustd.CZONE = 90000;
-           arpstmtd.ST_SOLD = arpcustd.CUSOLD;
-           arpstmtd.ST_INVDAT = B6ADAT;
-           arpstmtd.ST_INV# = B6INV#;
-           arpstmtd.ST_INVTYPE = '';
-           arpstmtd.ST_CREAT = %Timestamp();
-           arpstmtd.ST_DOPEN = %dec(OWTOTA : 11 : 2);
-           arpstmtd.ST_DTOTAL = %dec(OWTOTA : 11 : 2);
-           arpstmtd.ST_OREF = OWOREF;
-           arpstmtd.ST_OBNO = OWOBNO;
-           arpstmtd.ST_CHAN = 'int';
-
-           EXEC SQL INSERT INTO ARPSTMT VALUES (:arpstmtd);
-         EndIf;
-       End-proc;
 
        // --------------------------------------------------
        // Procedure name: EmailReport
