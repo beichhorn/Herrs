@@ -307,6 +307,9 @@ JVC3  * JVC4 08/13/99 BUG: OWUDT8 Settlement Date was getting OBDT8, etc.
        //      This is going to add an unfinished record, and later fill it in
        //      by RAR0016.
        //
+       // BJE  04/18/2024 Replace zDistributors array with QTEMP/DIST250 to
+       //      eliminate an array subscript error. (BJE01)
+       //
 14272  // H OPTION(*NODEBUGIO : *SRCSTMT)
 14272  ctl-opt OPTION(*NODEBUGIO: *SRCSTMT) ACTGRP(*CALLER);
 
@@ -529,6 +532,8 @@ JVC3 D* which is the flag from ARPOX that NSP adjustments occurred
      D zCUSTTYPE       S              3  0 DIM(10)
      D wCODE           S             10
      D wIDX            S              3  0
+     D* zDistributors   S              5P 0 DIM(100)
+     D* wDistCounter    S              5U 0 Inz(0)
      D wShip5A1        S              5A
      D wShip5A2        S              5A
      DiThisIsSBTBatch  S               N
@@ -1122,6 +1127,13 @@ JVC  C                   SELECT
      C                   ENDIF
 
       /FREE
+
+       exec sql insert into QTEMP.DIST250 values(:wShip5);
+       If sqlstate = SQLSuccess;
+         wFirstDist = *On ;
+       Else;
+         wFirstDist = *Off ;
+       Endif;
 
       /END-FREE
 
@@ -2517,6 +2529,7 @@ JVC3 C     PRAP0260      PLIST
 
       /FREE
 
+       wCODE = 'RAR0250';
        SETLL wCODE DPPCODEVAL ;
 
        FOR wIDX = 1 TO %ELEM(zCUSTTYPE) ;
@@ -2545,6 +2558,22 @@ JVC3 C     PRAP0260      PLIST
            CREATE TABLE QTEMP.DISTOBLIG (
              OB_OBREF DEC (11,0) NOT NULL WITH DEFAULT
              );
+
+         Exec SQL
+           DROP INDEX QTEMP.IDX_DIST250;
+
+          Exec SQL
+           DROP TABLE QTEMP.DIST250;
+
+          // List of distributors in this batch
+         Exec SQL
+           CREATE TABLE QTEMP.DIST250 (
+             shipTo DEC (5,0) NOT NULL WITH DEFAULT
+             );
+
+         Exec SQL
+           CREATE UNIQUE INDEX QTEMP.IDX_DIST250
+             ON QTEMP.DIST250 (shipTo);
 
        End-proc;
 
@@ -2642,7 +2671,6 @@ JVC3 C     PRAP0260      PLIST
 14272  //    AND D_B6SOLDDS = :D_B6SOLDDS;
 
 14272  End-proc;
-
        // --------------------------------------------------
        // Procedure name: EmailReport
        // Purpose:  Email Spool file (Report)
